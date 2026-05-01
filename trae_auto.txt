@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-GitHub 项目小助手 v6.2 (最终版)
-- 设置集中管理：Token、字体缩放、自动解压、上传位置
-- 工作目录管理，下载解压均在工作目录下，记住当前项目子目录
-- 两个上传按钮：快速上传（当前项目）、手动上传（完全自定义，支持指定目标路径）
-- 编译指令按钮：自定义命令历史记录（最多10条），支持占位符替换
-- 修复 Token 初始化问题
+GitHub 项目小助手 v7.13 (解压重名策略增强版)
+- 新增解压目录重名策略：删除原有目录、备份原有目录、自动重命名解压目录
+- 编译指令对话框可实现保存指令及复制到剪贴板
+- 修复下载 ZIP 子目录问题
 """
 
 import os, sys, json, base64, tempfile, shutil, subprocess, zipfile, threading, time
+from datetime import datetime
 from tkinter import *
 from tkinter import ttk, filedialog, messagebox, font as tkfont
 
@@ -46,9 +45,9 @@ def run_in_thread(func):
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("GitHub 项目小助手 v6.2")
-        self.root.geometry("750x650")
-        self.root.minsize(650, 500)
+        self.root.title("GitHub 项目小助手 v7.13")
+        self.root.geometry("800x750")
+        self.root.minsize(700, 650)
 
         self.config = load_config()
         self.token = self.config.get("token", "")
@@ -62,15 +61,42 @@ class App:
         self.upload_target = self.config.get("upload_target", "release")
         self.font_scale = self.config.get("font_scale", 1.0)
 
-        # 历史指令列表（最多10条），默认包含一条常用指令
+        # 自定义项目子目录（解压时使用）
+        self.custom_project_subdir = self.config.get("custom_project_subdir", "")
+        
+        # 解压目录重名策略: delete, backup, rename
+        self.duplicate_strategy = self.config.get("duplicate_strategy", "rename")
+
+        # 按钮可见性配置
+        self.show_btn_extract = self.config.get("show_btn_extract", True)
+        self.show_btn_open_dir = self.config.get("show_btn_open_dir", True)
+        self.show_btn_build = self.config.get("show_btn_build", True)
+        self.show_btn_quick_upload = self.config.get("show_btn_quick_upload", True)
+        self.show_btn_manual_upload = self.config.get("show_btn_manual_upload", True)
+        self.show_btn_ai = self.config.get("show_btn_ai", True)
+
+        # AI工具配置
+        self.ai_exe_path = self.config.get("ai_exe_path", "")
+        self.auto_copy_cmd = self.config.get("auto_copy_cmd", False)
+        self.copy_cmd_history = self.config.get("copy_cmd_history", ["在 {project_dir} 中执行构建", "cd {project_dir}"])
+        if not self.copy_cmd_history:
+            self.copy_cmd_history = ["在 {project_dir} 中执行构建"]
+
         default_cmds = ["cd {project_dir} && gradle assembleDebug"]
         self.custom_build_cmds = self.config.get("custom_build_cmds", default_cmds)
         if not self.custom_build_cmds:
             self.custom_build_cmds = default_cmds
 
+        default_ai_cmds = ["{ai_exe} \"{project_dir}\"", "{ai_exe} --open \"{project_dir}\""]
+        self.ai_tool_cmds = self.config.get("ai_tool_cmds", default_ai_cmds)
+        if not self.ai_tool_cmds:
+            self.ai_tool_cmds = default_ai_cmds
+
+        self.auto_start_ai = self.config.get("auto_start_ai", False)
+
         self.repos_cache = []
         self.branches_cache = []
-        self.last_extracted_dir = None
+        self.last_extracted_dir = None  # 解压生成的项目子目录
 
         self.apply_font_scale(self.font_scale)
         self.setup_ui()
@@ -119,27 +145,22 @@ class App:
         self.work_var = StringVar(value=self.work_dir)
         ttk.Entry(work_frame, textvariable=self.work_var, width=50, state='readonly').pack(side=LEFT, fill=X, expand=True)
         ttk.Button(work_frame, text="浏览...", command=self.browse_work).pack(side=LEFT, padx=5)
-        ttk.Label(work_frame, text="项目子目录:").pack(side=LEFT, padx=(10,0))
-        self.project_var = StringVar(value=self.last_extracted_dir if self.last_extracted_dir else "（无）")
-        ttk.Label(work_frame, textvariable=self.project_var, foreground="blue").pack(side=LEFT)
 
-        # Trae 路径
-        ttk.Label(main, text="Trae 可执行文件路径", font=("", 10, "bold")).grid(row=r, column=0, sticky=W, pady=(10,2)); r+=1
-        trae_frame = ttk.Frame(main)
-        trae_frame.grid(row=r, column=0, columnspan=3, sticky=EW, pady=(0,5)); r+=1
-        self.trae_var = StringVar(value=self.trae_path)
-        ttk.Entry(trae_frame, textvariable=self.trae_var, width=50, state='readonly').pack(side=LEFT, fill=X, expand=True)
-        ttk.Button(trae_frame, text="浏览...", command=self.browse_trae).pack(side=LEFT, padx=5)
+        # 项目目录（独立选择，不能等于工作目录）
+        ttk.Label(main, text="项目目录", font=("", 10, "bold")).grid(row=r, column=0, sticky=W, pady=(10,2)); r+=1
+        project_frame = ttk.Frame(main)
+        project_frame.grid(row=r, column=0, columnspan=3, sticky=EW, pady=(0,5)); r+=1
+        
+        self.project_path_var = StringVar(value=self.last_extracted_dir if self.last_extracted_dir else "（未选择）")
+        self.project_path_entry = ttk.Entry(project_frame, textvariable=self.project_path_var, width=50, state='readonly')
+        self.project_path_entry.pack(side=LEFT, fill=X, expand=True)
+        ttk.Button(project_frame, text="浏览...", command=self.browse_project_dir).pack(side=LEFT, padx=5)
+        ttk.Button(project_frame, text="清除", command=self.clear_project_dir).pack(side=LEFT, padx=2)
 
-        # 功能按钮
-        btn_frame = ttk.Frame(main)
-        btn_frame.grid(row=r, column=0, columnspan=3, pady=15); r+=1
-        ttk.Button(btn_frame, text="1. 下载 ZIP", command=self.download_zip).pack(side=LEFT, padx=5)
-        ttk.Button(btn_frame, text="2. 解压 ZIP", command=self.extract_zip).pack(side=LEFT, padx=5)
-        ttk.Button(btn_frame, text="3. 打开目录", command=self.open_project_dir).pack(side=LEFT, padx=5)
-        ttk.Button(btn_frame, text="4. 编译指令", command=self.show_build_cmd_dialog).pack(side=LEFT, padx=5)
-        ttk.Button(btn_frame, text="5. 快速上传", command=self.quick_upload).pack(side=LEFT, padx=5)
-        ttk.Button(btn_frame, text="6. 手动上传", command=self.show_manual_upload_dialog).pack(side=LEFT, padx=5)
+        # 功能按钮容器
+        self.btn_frame = ttk.Frame(main)
+        self.btn_frame.grid(row=r, column=0, columnspan=3, pady=15); r+=1
+        self.update_buttons_visibility()
 
         # 日志
         ttk.Label(main, text="操作日志", font=("", 10, "bold")).grid(row=r, column=0, sticky=W); r+=1
@@ -164,7 +185,70 @@ class App:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    # ---------- 内部 API 登录 ----------
+    def browse_project_dir(self):
+        """浏览并选择项目目录，禁止选择工作目录本身"""
+        d = filedialog.askdirectory(title="选择项目目录")
+        if not d:
+            return
+        # 安全检查：不能等于工作目录
+        if self.work_dir and os.path.samefile(d, self.work_dir):
+            messagebox.showerror("错误", "项目目录不能设置为工作目录本身！\n请选择一个具体的项目子目录。")
+            return
+        self.project_path_var.set(d)
+        self.last_extracted_dir = d  # 同时更新解压记录，保持兼容
+        log(f"📁 已设置项目目录: {d}")
+
+    def clear_project_dir(self):
+        """清除项目目录"""
+        self.project_path_var.set("（未选择）")
+        self.last_extracted_dir = None
+        log("已清除项目目录")
+
+    def _get_current_project_dir(self):
+        """
+        获取当前有效的项目目录（优先级：手动选择 > 解压生成）
+        返回值：有效目录路径 | None
+        """
+        # 优先使用手动选择的目录
+        manual_path = self.project_path_var.get()
+        if manual_path and manual_path != "（未选择）" and os.path.isdir(manual_path):
+            # 额外检查不能等于工作目录（安全）
+            if self.work_dir and os.path.samefile(manual_path, self.work_dir):
+                log("⚠️ 警告：手动选择的项目目录等于工作目录，已被忽略")
+                self.project_path_var.set("（未选择）")
+            else:
+                return manual_path
+        
+        # 其次使用解压生成的目录
+        if self.last_extracted_dir and os.path.isdir(self.last_extracted_dir):
+            if self.work_dir and os.path.samefile(self.last_extracted_dir, self.work_dir):
+                log("⚠️ 警告：解压目录等于工作目录，已被忽略")
+                self.last_extracted_dir = None
+            else:
+                return self.last_extracted_dir
+        
+        return None
+
+    def update_buttons_visibility(self):
+        for widget in self.btn_frame.winfo_children():
+            widget.destroy()
+
+        ttk.Button(self.btn_frame, text="1. 下载 ZIP", command=self.download_zip).pack(side=LEFT, padx=5)
+
+        if self.show_btn_extract:
+            ttk.Button(self.btn_frame, text="2. 解压 ZIP", command=self.extract_zip).pack(side=LEFT, padx=5)
+        if self.show_btn_open_dir:
+            ttk.Button(self.btn_frame, text="3. 打开目录", command=self.open_project_dir).pack(side=LEFT, padx=5)
+        if self.show_btn_build:
+            ttk.Button(self.btn_frame, text="4. 编译指令", command=self.show_build_cmd_dialog).pack(side=LEFT, padx=5)
+        if self.show_btn_quick_upload:
+            ttk.Button(self.btn_frame, text="5. 快速上传", command=self.quick_upload).pack(side=LEFT, padx=5)
+        if self.show_btn_manual_upload:
+            ttk.Button(self.btn_frame, text="6. 手动上传", command=self.show_manual_upload_dialog).pack(side=LEFT, padx=5)
+        if self.show_btn_ai:
+            ttk.Button(self.btn_frame, text="7. 启动AI工具", command=self.show_ai_tool_dialog).pack(side=LEFT, padx=5)
+
+    # ---------- API 登录 ----------
     def _init_api_login(self):
         if not self.token:
             return
@@ -181,37 +265,10 @@ class App:
             self.config["token"] = ""
             save_config(self.config)
 
-    def browse_work(self):
-        d = filedialog.askdirectory()
-        if d:
-            self.work_var.set(d)
-            self.work_dir = d
-            self.config["work_dir"] = d
-            save_config(self.config)
-            log(f"📁 工作目录: {d}")
-
-    def browse_trae(self):
-        path = filedialog.askopenfilename(title="选择 Trae 可执行文件")
-        if path:
-            self.trae_var.set(path)
-            self.trae_path = path
-            self.config["trae_path"] = path
-            save_config(self.config)
-
-    def apply_token(self, silent=False):
-        token = self.token_var.get().strip()
-        if not token:
-            if not silent:
-                messagebox.showerror("错误", "Token 不能为空")
-            return
-        self.token = token
-        self.config["token"] = token
-        save_config(self.config)
-        self._init_api_login()
-
     @run_in_thread
     def load_repos(self):
-        if not self.token: return
+        if not self.token:
+            return
         log("🔄 加载仓库列表...")
         try:
             headers = {"Authorization": f"token {self.token}"}
@@ -242,7 +299,8 @@ class App:
     @run_in_thread
     def load_branches(self):
         repo = self.repo_combo.get()
-        if not repo or "/" not in repo: return
+        if not repo or "/" not in repo:
+            return
         log("🔄 加载分支列表...")
         try:
             headers = {"Authorization": f"token {self.token}"}
@@ -270,22 +328,36 @@ class App:
         self.config["branch"] = self.branch
         save_config(self.config)
 
-    # ===================== 设置对话框 =====================
+    def browse_work(self):
+        d = filedialog.askdirectory()
+        if d:
+            self.work_var.set(d)
+            self.work_dir = d
+            self.config["work_dir"] = d
+            save_config(self.config)
+            log(f"📁 工作目录: {d}")
+            # 如果之前设置的项目目录等于新工作目录，自动清除
+            current_project = self._get_current_project_dir()
+            if current_project and os.path.samefile(current_project, d):
+                self.clear_project_dir()
+                messagebox.showwarning("警告", "工作目录已变更，之前的项目目录等于工作目录，已自动清除。请重新设置项目目录。")
+
+    # ---------- 设置对话框 ----------
     def open_settings(self):
         dialog = Toplevel(self.root)
         dialog.title("设置")
-        dialog.geometry("550x500")
+        dialog.geometry("750x800")
         dialog.transient(self.root)
         dialog.grab_set()
 
         nb = ttk.Notebook(dialog)
         nb.pack(fill=BOTH, expand=True, padx=5, pady=5)
 
+        # === 基本设置页 ===
         basic_frame = ttk.Frame(nb, padding="10")
         nb.add(basic_frame, text="基本设置")
 
         row = 0
-        # Token
         ttk.Label(basic_frame, text="GitHub Token:").grid(row=row, column=0, sticky=W, pady=5)
         self.token_var = StringVar(value=self.token)
         tok_entry = ttk.Entry(basic_frame, textvariable=self.token_var, width=50, show="*")
@@ -295,10 +367,30 @@ class App:
                         command=lambda: tok_entry.config(show="" if show_token_var.get() else "*")).grid(row=row, column=2)
         row += 1
 
-        # 字体缩放
         ttk.Label(basic_frame, text="字体缩放:").grid(row=row, column=0, sticky=W, pady=5)
         font_scale_var = DoubleVar(value=self.font_scale)
         ttk.Spinbox(basic_frame, from_=0.8, to=2.0, increment=0.1, textvariable=font_scale_var, width=5).grid(row=row, column=1, sticky=W)
+        row += 1
+
+        # 自定义项目子目录（解压时使用）
+        ttk.Label(basic_frame, text="解压时项目子目录名称 (可选):", font=("", 9, "bold")).grid(row=row, column=0, sticky=W, pady=(10,2))
+        row += 1
+        subdir_frame = ttk.Frame(basic_frame)
+        subdir_frame.grid(row=row, column=0, columnspan=3, sticky=EW, pady=2)
+        self.custom_subdir_var = StringVar(value=self.custom_project_subdir)
+        ttk.Entry(subdir_frame, textvariable=self.custom_subdir_var, width=40).pack(side=LEFT, fill=X, expand=True)
+        ttk.Label(subdir_frame, text="支持 {repo_name} 占位符，留空则自动生成(easyradioDP_001)").pack(side=LEFT, padx=5)
+        row += 1
+
+        # 解压重名策略
+        ttk.Label(basic_frame, text="解压目录重名策略:", font=("", 9, "bold")).grid(row=row, column=0, sticky=W, pady=(10,2))
+        row += 1
+        strategy_frame = ttk.Frame(basic_frame)
+        strategy_frame.grid(row=row, column=0, columnspan=3, sticky=EW, pady=2)
+        self.strategy_var = StringVar(value=self.duplicate_strategy)
+        ttk.Radiobutton(strategy_frame, text="删除原有目录（危险）", variable=self.strategy_var, value="delete").pack(side=LEFT, padx=5)
+        ttk.Radiobutton(strategy_frame, text="备份原有目录（重命名为 .bak.年月日_时分）", variable=self.strategy_var, value="backup").pack(side=LEFT, padx=5)
+        ttk.Radiobutton(strategy_frame, text="自动重命名解压目录（添加 _001, _002）", variable=self.strategy_var, value="rename").pack(side=LEFT, padx=5)
         row += 1
 
         # 下载选项
@@ -319,45 +411,310 @@ class App:
 
         basic_frame.columnconfigure(1, weight=1)
 
-        btn_frame = ttk.Frame(dialog)
-        btn_frame.pack(pady=10)
-        ttk.Button(btn_frame, text="保存", command=lambda: self.save_settings(
-            font_scale_var, auto_extract_var, delete_zip_var, upload_target_var, dialog
-        )).pack(side=LEFT, padx=5)
-        ttk.Button(btn_frame, text="取消", command=dialog.destroy).pack(side=LEFT, padx=5)
+        # === AI工具设置页 ===
+        ai_frame = ttk.Frame(nb, padding="10")
+        nb.add(ai_frame, text="AI工具")
 
-    def save_settings(self, font_scale_var, auto_extract_var, delete_zip_var, upload_target_var, dialog):
-        new_token = self.token_var.get().strip()
-        new_scale = font_scale_var.get()
-        self.auto_extract = auto_extract_var.get()
-        self.delete_zip_after_extract = delete_zip_var.get()
-        self.upload_target = upload_target_var.get()
+        row_ai = 0
+        ttk.Label(ai_frame, text="AI工具可执行文件 (.exe):", font=("", 9, "bold")).grid(row=row_ai, column=0, sticky=W, pady=5)
+        row_ai += 1
+        exe_frame = ttk.Frame(ai_frame)
+        exe_frame.grid(row=row_ai, column=0, columnspan=3, sticky=EW, pady=5)
+        self.ai_exe_var = StringVar(value=self.ai_exe_path)
+        ttk.Entry(exe_frame, textvariable=self.ai_exe_var, width=50, state='readonly').pack(side=LEFT, fill=X, expand=True)
+        ttk.Button(exe_frame, text="浏览...", command=self._browse_ai_exe).pack(side=LEFT, padx=5)
+        row_ai += 1
 
-        self.config.update({
-            "token": new_token,
-            "font_scale": new_scale,
-            "auto_extract": self.auto_extract,
-            "delete_zip_after_extract": self.delete_zip_after_extract,
-            "upload_target": self.upload_target
-        })
-        save_config(self.config)
+        auto_start_ai_var = BooleanVar(value=self.auto_start_ai)
+        ttk.Checkbutton(ai_frame, text="项目解压成功后自动启动AI编程工具",
+                        variable=auto_start_ai_var).grid(row=row_ai, column=0, columnspan=3, sticky=W, pady=5)
+        row_ai += 1
 
-        if new_scale != self.font_scale:
+        ttk.Label(ai_frame, text="手动启动命令列表 (支持 {ai_exe} {project_dir} {work_dir}):",
+                  font=("", 9)).grid(row=row_ai, column=0, columnspan=3, sticky=W, pady=(10,5))
+        row_ai += 1
+
+        list_frame = ttk.Frame(ai_frame)
+        list_frame.grid(row=row_ai, column=0, columnspan=3, sticky=NSEW, pady=5)
+        row_ai += 1
+        self.ai_cmd_listbox = Listbox(list_frame, height=4, selectmode=SINGLE)
+        scrollbar = ttk.Scrollbar(list_frame, orient=VERTICAL, command=self.ai_cmd_listbox.yview)
+        self.ai_cmd_listbox.configure(yscrollcommand=scrollbar.set)
+        self.ai_cmd_listbox.pack(side=LEFT, fill=BOTH, expand=True)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        for cmd in self.ai_tool_cmds:
+            self.ai_cmd_listbox.insert(END, cmd)
+
+        edit_frame = ttk.Frame(ai_frame)
+        edit_frame.grid(row=row_ai, column=0, columnspan=3, sticky=EW, pady=5)
+        row_ai += 1
+        ttk.Label(edit_frame, text="命令:").pack(side=LEFT, padx=(0,5))
+        self.ai_cmd_entry = ttk.Entry(edit_frame, width=50)
+        self.ai_cmd_entry.pack(side=LEFT, fill=X, expand=True, padx=5)
+        ttk.Button(edit_frame, text="添加/更新", command=self._add_update_ai_cmd).pack(side=LEFT, padx=2)
+        ttk.Button(edit_frame, text="删除选中", command=self._delete_ai_cmd).pack(side=LEFT, padx=2)
+
+        info_label = ttk.Label(ai_frame, text='提示: 使用 {ai_exe} 代表选中的可执行文件路径，会自动加引号。示例: {ai_exe} "{project_dir}"',
+                               foreground="gray", font=("", 8))
+        info_label.grid(row=row_ai, column=0, columnspan=3, sticky=W, pady=(10,0))
+
+        # === 复制指令页 ===
+        copy_frame = ttk.Frame(nb, padding="10")
+        nb.add(copy_frame, text="复制指令")
+
+        row_copy = 0
+        auto_copy_var = BooleanVar(value=self.auto_copy_cmd)
+        ttk.Checkbutton(copy_frame, text="解压完成后自动复制以下指令到剪贴板",
+                        variable=auto_copy_var).grid(row=row_copy, column=0, columnspan=3, sticky=W, pady=5)
+        row_copy += 1
+
+        ttk.Label(copy_frame, text="指令列表 (最多10条，解压后自动复制第一条，支持 {project_dir} {work_dir}):",
+                  font=("", 9)).grid(row=row_copy, column=0, columnspan=3, sticky=W, pady=(10,5))
+        row_copy += 1
+
+        copy_list_frame = ttk.Frame(copy_frame)
+        copy_list_frame.grid(row=row_copy, column=0, columnspan=3, sticky=NSEW, pady=5)
+        row_copy += 1
+        self.copy_cmd_listbox = Listbox(copy_list_frame, height=5, selectmode=SINGLE)
+        copy_scrollbar = ttk.Scrollbar(copy_list_frame, orient=VERTICAL, command=self.copy_cmd_listbox.yview)
+        self.copy_cmd_listbox.configure(yscrollcommand=copy_scrollbar.set)
+        self.copy_cmd_listbox.pack(side=LEFT, fill=BOTH, expand=True)
+        copy_scrollbar.pack(side=RIGHT, fill=Y)
+        for cmd in self.copy_cmd_history:
+            self.copy_cmd_listbox.insert(END, cmd)
+
+        copy_edit_frame = ttk.Frame(copy_frame)
+        copy_edit_frame.grid(row=row_copy, column=0, columnspan=3, sticky=EW, pady=5)
+        row_copy += 1
+        ttk.Label(copy_edit_frame, text="指令:").pack(side=LEFT, padx=(0,5))
+        self.copy_cmd_entry = ttk.Entry(copy_edit_frame, width=50)
+        self.copy_cmd_entry.pack(side=LEFT, fill=X, expand=True, padx=5)
+        ttk.Button(copy_edit_frame, text="添加/更新", command=self._add_update_copy_cmd).pack(side=LEFT, padx=2)
+        ttk.Button(copy_edit_frame, text="删除选中", command=self._delete_copy_cmd).pack(side=LEFT, padx=2)
+
+        info_label2 = ttk.Label(copy_frame, text="示例: 在 {project_dir} 中执行构建 / 打开终端并 cd 到项目",
+                                foreground="gray", font=("", 8))
+        info_label2.grid(row=row_copy, column=0, columnspan=3, sticky=W, pady=(10,0))
+
+        # === 界面设置页 ===
+        ui_frame = ttk.Frame(nb, padding="10")
+        nb.add(ui_frame, text="界面")
+
+        row_ui = 0
+        ttk.Label(ui_frame, text="主界面按钮显示/隐藏", font=("", 10, "bold")).grid(row=row_ui, column=0, columnspan=2, sticky=W, pady=5)
+        row_ui += 1
+
+        show_extract_var = BooleanVar(value=self.show_btn_extract)
+        ttk.Checkbutton(ui_frame, text="显示「2. 解压 ZIP」", variable=show_extract_var).grid(row=row_ui, column=0, sticky=W, pady=2)
+        row_ui += 1
+
+        show_open_dir_var = BooleanVar(value=self.show_btn_open_dir)
+        ttk.Checkbutton(ui_frame, text="显示「3. 打开目录」", variable=show_open_dir_var).grid(row=row_ui, column=0, sticky=W, pady=2)
+        row_ui += 1
+
+        show_build_var = BooleanVar(value=self.show_btn_build)
+        ttk.Checkbutton(ui_frame, text="显示「4. 编译指令」", variable=show_build_var).grid(row=row_ui, column=0, sticky=W, pady=2)
+        row_ui += 1
+
+        show_quick_upload_var = BooleanVar(value=self.show_btn_quick_upload)
+        ttk.Checkbutton(ui_frame, text="显示「5. 快速上传」", variable=show_quick_upload_var).grid(row=row_ui, column=0, sticky=W, pady=2)
+        row_ui += 1
+
+        show_manual_upload_var = BooleanVar(value=self.show_btn_manual_upload)
+        ttk.Checkbutton(ui_frame, text="显示「6. 手动上传」", variable=show_manual_upload_var).grid(row=row_ui, column=0, sticky=W, pady=2)
+        row_ui += 1
+
+        show_ai_var = BooleanVar(value=self.show_btn_ai)
+        ttk.Checkbutton(ui_frame, text="显示「7. 启动AI工具」", variable=show_ai_var).grid(row=row_ui, column=0, sticky=W, pady=2)
+        row_ui += 1
+
+        # 底部保存按钮
+        btn_frame_bottom = ttk.Frame(dialog)
+        btn_frame_bottom.pack(pady=10)
+
+        def save_and_close():
+            # 基本设置
+            new_token = self.token_var.get().strip()
+            new_scale = font_scale_var.get()
+            self.auto_extract = auto_extract_var.get()
+            self.delete_zip_after_extract = delete_zip_var.get()
+            self.upload_target = upload_target_var.get()
             self.font_scale = new_scale
-            self.apply_font_scale(new_scale)
-            self.log_text.configure(font=("Consolas", int(9*new_scale)))
+            self.custom_project_subdir = self.custom_subdir_var.get().strip()
+            self.duplicate_strategy = self.strategy_var.get()
 
-        if new_token != self.token:
-            self.token = new_token
-            if new_token:
-                self._init_api_login()
-            else:
-                log("Token 已清空")
+            # AI设置
+            self.auto_start_ai = auto_start_ai_var.get()
+            self.ai_exe_path = self.ai_exe_var.get().strip()
+            self.ai_tool_cmds = list(self.ai_cmd_listbox.get(0, END))
+            if not self.ai_tool_cmds:
+                self.ai_tool_cmds = ["{ai_exe} \"{project_dir}\""]
 
-        log("设置已保存")
-        dialog.destroy()
+            # 复制指令
+            self.auto_copy_cmd = auto_copy_var.get()
+            self.copy_cmd_history = list(self.copy_cmd_listbox.get(0, END))
+            if not self.copy_cmd_history:
+                self.copy_cmd_history = ["在 {project_dir} 中执行构建"]
 
-    # ===================== 下载 ZIP（不再自动上传） =====================
+            # 界面按钮可见性
+            self.show_btn_extract = show_extract_var.get()
+            self.show_btn_open_dir = show_open_dir_var.get()
+            self.show_btn_build = show_build_var.get()
+            self.show_btn_quick_upload = show_quick_upload_var.get()
+            self.show_btn_manual_upload = show_manual_upload_var.get()
+            self.show_btn_ai = show_ai_var.get()
+
+            # 保存配置
+            self.config.update({
+                "token": new_token,
+                "font_scale": new_scale,
+                "auto_extract": self.auto_extract,
+                "delete_zip_after_extract": self.delete_zip_after_extract,
+                "upload_target": self.upload_target,
+                "custom_project_subdir": self.custom_project_subdir,
+                "duplicate_strategy": self.duplicate_strategy,
+                "auto_start_ai": self.auto_start_ai,
+                "auto_copy_cmd": self.auto_copy_cmd,
+                "ai_exe_path": self.ai_exe_path,
+                "ai_tool_cmds": self.ai_tool_cmds,
+                "copy_cmd_history": self.copy_cmd_history,
+                "custom_build_cmds": self.custom_build_cmds,
+                "show_btn_extract": self.show_btn_extract,
+                "show_btn_open_dir": self.show_btn_open_dir,
+                "show_btn_build": self.show_btn_build,
+                "show_btn_quick_upload": self.show_btn_quick_upload,
+                "show_btn_manual_upload": self.show_btn_manual_upload,
+                "show_btn_ai": self.show_btn_ai,
+            })
+            save_config(self.config)
+
+            if new_scale != self.font_scale:
+                self.apply_font_scale(new_scale)
+                self.log_text.configure(font=("Consolas", int(9*new_scale)))
+
+            if new_token != self.token:
+                self.token = new_token
+                if new_token:
+                    self._init_api_login()
+                else:
+                    log("Token 已清空")
+
+            self.update_buttons_visibility()
+            log("设置已保存")
+            dialog.destroy()
+
+        ttk.Button(btn_frame_bottom, text="保存", command=save_and_close).pack(side=LEFT, padx=5)
+        ttk.Button(btn_frame_bottom, text="取消", command=dialog.destroy).pack(side=LEFT, padx=5)
+
+    def _browse_ai_exe(self):
+        path = filedialog.askopenfilename(title="选择 AI 工具可执行文件", filetypes=[("可执行文件", "*.exe"), ("所有文件", "*.*")])
+        if path:
+            self.ai_exe_var.set(path)
+            self.ai_exe_path = path
+
+    def _add_update_ai_cmd(self):
+        cmd = self.ai_cmd_entry.get().strip()
+        if not cmd:
+            return
+        selection = self.ai_cmd_listbox.curselection()
+        if selection:
+            idx = selection[0]
+            self.ai_cmd_listbox.delete(idx)
+            self.ai_cmd_listbox.insert(idx, cmd)
+        else:
+            if self.ai_cmd_listbox.size() >= 10:
+                messagebox.showwarning("提示", "命令列表最多10条")
+                return
+            self.ai_cmd_listbox.insert(END, cmd)
+        self.ai_cmd_entry.delete(0, END)
+
+    def _delete_ai_cmd(self):
+        selection = self.ai_cmd_listbox.curselection()
+        if selection:
+            self.ai_cmd_listbox.delete(selection[0])
+
+    def _add_update_copy_cmd(self):
+        cmd = self.copy_cmd_entry.get().strip()
+        if not cmd:
+            return
+        selection = self.copy_cmd_listbox.curselection()
+        if selection:
+            idx = selection[0]
+            self.copy_cmd_listbox.delete(idx)
+            self.copy_cmd_listbox.insert(idx, cmd)
+        else:
+            if self.copy_cmd_listbox.size() >= 10:
+                messagebox.showwarning("提示", "指令列表最多10条")
+                return
+            self.copy_cmd_listbox.insert(END, cmd)
+        self.copy_cmd_entry.delete(0, END)
+
+    def _delete_copy_cmd(self):
+        selection = self.copy_cmd_listbox.curselection()
+        if selection:
+            self.copy_cmd_listbox.delete(selection[0])
+
+    # ---------- 辅助函数 ----------
+    def _get_project_subdir_name(self, repo_name=None):
+        template = self.custom_project_subdir.strip()
+        if not template:
+            return None
+        if repo_name:
+            result = template.replace("{repo_name}", repo_name)
+        else:
+            result = template
+        invalid_chars = '<>:"/\\|?*'
+        for ch in invalid_chars:
+            result = result.replace(ch, '_')
+        return result if result else None
+
+    def _handle_duplicate_directory(self, target_dir):
+        """
+        根据用户选择的策略处理已存在的目录
+        返回：True 表示可以继续解压（目录已处理），False 表示应取消解压
+        """
+        if not os.path.exists(target_dir):
+            return True
+        
+        strategy = self.duplicate_strategy
+        
+        if strategy == "delete":
+            # 删除原有目录
+            try:
+                shutil.rmtree(target_dir)
+                log(f"🗑 已删除原有目录: {target_dir}")
+                return True
+            except Exception as e:
+                log(f"❌ 删除目录失败: {e}")
+                return False
+        
+        elif strategy == "backup":
+            # 备份原有目录：重命名为 .bak.年月日_时分
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+            backup_name = f"{target_dir}.bak.{timestamp}"
+            try:
+                shutil.move(target_dir, backup_name)
+                log(f"📦 已备份原有目录到: {backup_name}")
+                return True
+            except Exception as e:
+                log(f"❌ 备份目录失败: {e}")
+                return False
+        
+        else:  # strategy == "rename" 或其他默认值
+            # 自动重命名解压目录（添加序号），原有目录保留
+            # 返回新的目标目录路径，调用方需要重试
+            return None  # None 表示需要重试，调用方应处理
+    
+    def _get_available_dir_name(self, base_dir):
+        """为 rename 策略生成可用的目录名（添加 _001, _002...）"""
+        counter = 1
+        new_dir = base_dir
+        while os.path.exists(new_dir):
+            new_dir = f"{base_dir}_{counter:03d}"
+            counter += 1
+        return new_dir
+
+    # ---------- 下载和解压 ----------
     @run_in_thread
     def download_zip(self):
         repo = self.repo_combo.get()
@@ -383,7 +740,9 @@ class App:
 
             if self.auto_extract:
                 log("📂 开始自动解压...")
-                self._extract_zip_file(zip_path, self.work_dir, remove_top=True, subdir_name=name)
+                custom_name = self._get_project_subdir_name(repo_name=name)
+                final_subdir_name = custom_name if custom_name else name
+                self._extract_zip_file(zip_path, self.work_dir, remove_top=True, subdir_name=final_subdir_name)
                 if self.delete_zip_after_extract:
                     try:
                         os.remove(zip_path)
@@ -393,7 +752,6 @@ class App:
         except Exception as e:
             log(f"❌ 下载失败: {e}")
 
-    # ---------- 手动解压 ----------
     @run_in_thread
     def extract_zip(self):
         zip_path = filedialog.askopenfilename(title="选择 ZIP 压缩包", filetypes=[("ZIP 文件", "*.zip")])
@@ -402,15 +760,21 @@ class App:
             log("❌ 请先设置工作目录")
             return
 
-        repo_name = ""
+        default_repo_name = ""
         if self.repo_full and "/" in self.repo_full:
-            repo_name = self.repo_full.split("/", 1)[1]
+            default_repo_name = self.repo_full.split("/", 1)[1]
         else:
-            repo_name = os.path.splitext(os.path.basename(zip_path))[0]
+            default_repo_name = os.path.splitext(os.path.basename(zip_path))[0]
 
-        if not messagebox.askyesno("确认", f"将解压到工作目录下的 {repo_name}/ 子目录\n确定吗？"):
+        custom_name = self._get_project_subdir_name(repo_name=default_repo_name)
+        if custom_name:
+            subdir_name = custom_name
+        else:
+            subdir_name = default_repo_name
+
+        if not messagebox.askyesno("确认", f"将解压到工作目录下的 {subdir_name}/ 子目录\n确定吗？"):
             return
-        self._extract_zip_file(zip_path, self.work_dir, remove_top=True, subdir_name=repo_name)
+        self._extract_zip_file(zip_path, self.work_dir, remove_top=True, subdir_name=subdir_name)
 
     def _extract_zip_file(self, zip_path, dest_dir, remove_top=True, subdir_name=None):
         try:
@@ -430,13 +794,23 @@ class App:
                 if subdir_name:
                     target_base = os.path.join(dest_dir, subdir_name)
                     target_dir = target_base
-                    counter = 1
-                    while os.path.exists(target_dir):
-                        target_dir = f"{target_base}_{counter:03d}"
-                        counter += 1
-                    log(f"📁 项目子目录: {os.path.basename(target_dir)}")
+                    
+                    # 根据策略处理已存在的目录
+                    if os.path.exists(target_dir):
+                        if self.duplicate_strategy == "rename":
+                            # rename 策略：寻找可用名称
+                            target_dir = self._get_available_dir_name(target_base)
+                            log(f"📁 目录已存在，自动重命名为: {os.path.basename(target_dir)}")
+                        else:
+                            # delete 或 backup 策略：处理目录
+                            if not self._handle_duplicate_directory(target_dir):
+                                log("❌ 解压取消")
+                                return
+                    else:
+                        log(f"📁 项目子目录: {os.path.basename(target_dir)}")
                 else:
                     target_dir = dest_dir
+                    log("⚠️ 警告：未指定子目录名，解压到工作目录")
 
                 os.makedirs(target_dir, exist_ok=True)
 
@@ -460,32 +834,90 @@ class App:
                             shutil.copyfileobj(src, dst)
                 log("✅ 解压完成")
                 self.last_extracted_dir = target_dir
-                self.project_var.set(os.path.basename(target_dir))
+                self.project_path_var.set(target_dir)
+
+                # 自动复制指令
+                if self.auto_copy_cmd and self.copy_cmd_history:
+                    first_cmd = self.copy_cmd_history[0]
+                    replaced = first_cmd.replace("{work_dir}", self.work_dir)
+                    replaced = replaced.replace("{project_dir}", target_dir)
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(replaced)
+                    log(f"📋 已复制指令到剪贴板: {replaced}")
+
+                # 自动启动AI工具
+                if self.auto_start_ai and self.ai_exe_path and os.path.isfile(self.ai_exe_path):
+                    if self.ai_tool_cmds:
+                        ai_cmd_template = self.ai_tool_cmds[0]
+                        exe_quoted = f'"{self.ai_exe_path}"'
+                        ai_cmd = ai_cmd_template.replace("{ai_exe}", exe_quoted)
+                        ai_cmd = ai_cmd.replace("{work_dir}", f'"{self.work_dir}"')
+                        ai_cmd = ai_cmd.replace("{project_dir}", f'"{target_dir}"')
+                        log(f"⚙️ 自动启动AI工具: {ai_cmd}")
+                        self._execute_ai_tool_command(ai_cmd, target_dir)
+                    else:
+                        default_cmd = f'"{self.ai_exe_path}" "{target_dir}"'
+                        log(f"⚙️ 自动启动AI工具: {default_cmd}")
+                        self._execute_ai_tool_command(default_cmd, target_dir)
+                elif self.auto_start_ai and not self.ai_exe_path:
+                    log("⚠️ 未设置AI工具可执行文件，无法自动启动")
+
         except Exception as e:
             log(f"❌ 解压失败: {e}")
 
-    # ---------- 打开目录 ----------
-    def open_project_dir(self):
-        d = self.last_extracted_dir
-        if not d or not os.path.isdir(d):
-            if self.work_dir and os.path.isdir(self.work_dir):
-                d = self.work_dir
-            else:
-                messagebox.showwarning("警告", "没有可打开的目录")
-                return
+    def _execute_ai_tool_command(self, command, cwd=None):
+        log(f"🚀 执行命令: {command}")
+        if cwd:
+            log(f"   工作目录: {cwd}")
         try:
-            if sys.platform == "win32": os.startfile(d)
-            elif sys.platform == "darwin": subprocess.run(["open", d])
-            else: subprocess.run(["xdg-open", d])
-            log(f"📁 已打开目录: {d}")
+            if sys.platform == "win32":
+                creationflags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+                subprocess.Popen(
+                    command,
+                    shell=True,
+                    cwd=cwd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creationflags,
+                    close_fds=True
+                )
+            else:
+                with open(os.devnull, 'w') as devnull:
+                    subprocess.Popen(
+                        command,
+                        shell=True,
+                        cwd=cwd,
+                        stdin=subprocess.DEVNULL,
+                        stdout=devnull,
+                        stderr=devnull,
+                        start_new_session=True
+                    )
+            log("✅ AI工具已启动")
+        except Exception as e:
+            log(f"❌ 启动异常: {e}")
+
+    def open_project_dir(self):
+        proj_dir = self._get_current_project_dir()
+        if not proj_dir:
+            messagebox.showwarning("警告", "没有有效的项目目录！\n请先解压项目，或使用“浏览”按钮手动选择一个项目目录（不能是工作目录本身）。")
+            return
+        try:
+            if sys.platform == "win32":
+                os.startfile(proj_dir)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", proj_dir])
+            else:
+                subprocess.run(["xdg-open", proj_dir])
+            log(f"📁 已打开目录: {proj_dir}")
         except Exception as e:
             log(f"❌ 无法打开目录: {e}")
 
-    # ---------- 编译指令（带历史记录） ----------
+    # ---------- 编译指令 ----------
     def show_build_cmd_dialog(self):
         dlg = Toplevel(self.root)
         dlg.title("编译指令")
-        dlg.geometry("550x180")
+        dlg.geometry("550x220")
         dlg.transient(self.root)
         dlg.grab_set()
 
@@ -497,45 +929,115 @@ class App:
         cmd_frame = ttk.Frame(frame)
         cmd_frame.pack(fill=X, pady=5)
 
-        # 下拉组合框显示历史指令
         self.cmd_combo = ttk.Combobox(cmd_frame, values=self.custom_build_cmds, width=55)
         self.cmd_combo.pack(side=LEFT, fill=X, expand=True)
         if self.custom_build_cmds:
-            self.cmd_combo.set(self.custom_build_cmds[0])  # 默认选第一条
+            self.cmd_combo.set(self.custom_build_cmds[0])
 
-        # 按钮区
         btn_frame = ttk.Frame(frame)
         btn_frame.pack(fill=X, pady=10)
+
+        def do_save():
+            cmd = self.cmd_combo.get().strip()
+            if not cmd:
+                messagebox.showwarning("提示", "请输入指令内容")
+                return
+            self._add_to_build_history(cmd)
+            log(f"💾 已保存编译指令: {cmd}")
+            messagebox.showinfo("提示", "指令已保存到历史记录")
 
         def do_copy():
             cmd = self.cmd_combo.get().strip()
             if not cmd:
+                messagebox.showwarning("提示", "请输入指令内容")
                 return
-            # 保存到历史记录
             self._add_to_build_history(cmd)
-            # 替换占位符
-            replaced_cmd = cmd.replace("{work_dir}", self.work_dir)
-            replaced_cmd = replaced_cmd.replace("{project_dir}", self.last_extracted_dir or self.work_dir)
+            project_dir = self._get_current_project_dir()
+            if not project_dir:
+                messagebox.showwarning("警告", "没有有效的项目目录！\n请先解压项目或手动选择项目目录。\n将只复制原始指令（不替换占位符）。")
+                replaced_cmd = cmd
+            else:
+                replaced_cmd = cmd.replace("{work_dir}", self.work_dir)
+                replaced_cmd = replaced_cmd.replace("{project_dir}", project_dir)
             self.root.clipboard_clear()
             self.root.clipboard_append(replaced_cmd)
             log(f"📋 已复制编译指令: {replaced_cmd}")
             dlg.destroy()
 
-        ttk.Button(btn_frame, text="复制到剪贴板", command=do_copy).pack(side=RIGHT, padx=5)
-        ttk.Button(btn_frame, text="取消", command=dlg.destroy).pack(side=RIGHT, padx=5)
+        ttk.Button(btn_frame, text="保存", command=do_save).pack(side=LEFT, padx=5)
+        ttk.Button(btn_frame, text="复制到剪贴板", command=do_copy).pack(side=LEFT, padx=5)
+        ttk.Button(btn_frame, text="取消", command=dlg.destroy).pack(side=LEFT, padx=5)
 
     def _add_to_build_history(self, cmd):
-        """将 cmd 添加到历史记录顶部，保持最多10条"""
-        # 移除重复项（如果已存在）
         if cmd in self.custom_build_cmds:
             self.custom_build_cmds.remove(cmd)
         self.custom_build_cmds.insert(0, cmd)
-        # 限制10条
         self.custom_build_cmds = self.custom_build_cmds[:10]
         self.config["custom_build_cmds"] = self.custom_build_cmds
         save_config(self.config)
 
-    # ---------- 快速上传（当前项目目录） ----------
+    # ---------- AI工具手动启动 ----------
+    def show_ai_tool_dialog(self):
+        if not self.ai_exe_path or not os.path.isfile(self.ai_exe_path):
+            messagebox.showwarning("提示", "请先在设置中指定AI工具可执行文件路径")
+            return
+        proj_dir = self._get_current_project_dir()
+        if not proj_dir:
+            messagebox.showwarning("警告", "没有有效的项目目录！\n请先解压项目，或使用“浏览”按钮手动选择一个项目目录（不能是工作目录本身）。")
+            return
+
+        dlg = Toplevel(self.root)
+        dlg.title("启动 AI 编程工具")
+        dlg.geometry("600x200")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        frame = ttk.Frame(dlg, padding="10")
+        frame.pack(fill=BOTH, expand=True)
+
+        ttk.Label(frame, text="选择或输入启动命令（支持 {ai_exe} {project_dir} {work_dir}）:").pack(anchor=W)
+
+        cmd_frame = ttk.Frame(frame)
+        cmd_frame.pack(fill=X, pady=5)
+
+        self.ai_cmd_combo = ttk.Combobox(cmd_frame, values=self.ai_tool_cmds, width=55)
+        self.ai_cmd_combo.pack(side=LEFT, fill=X, expand=True)
+        if self.ai_tool_cmds:
+            self.ai_cmd_combo.set(self.ai_tool_cmds[0])
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=X, pady=10)
+
+        def do_run():
+            cmd_template = self.ai_cmd_combo.get().strip()
+            if not cmd_template:
+                messagebox.showwarning("提示", "请输入命令")
+                return
+            self._add_to_ai_tool_history(cmd_template)
+            current_proj = self._get_current_project_dir()
+            if not current_proj:
+                messagebox.showwarning("警告", "项目目录无效，请重新选择或解压项目")
+                return
+            replaced = cmd_template.replace("{ai_exe}", f'"{self.ai_exe_path}"')
+            replaced = replaced.replace("{work_dir}", f'"{self.work_dir}"')
+            replaced = replaced.replace("{project_dir}", f'"{current_proj}"')
+            log(f"手动启动命令: {replaced}")
+            log(f"     项目目录: {current_proj}")
+            self._execute_ai_tool_command(replaced, current_proj)
+            dlg.destroy()
+
+        ttk.Button(btn_frame, text="执行", command=do_run).pack(side=RIGHT, padx=5)
+        ttk.Button(btn_frame, text="取消", command=dlg.destroy).pack(side=RIGHT, padx=5)
+
+    def _add_to_ai_tool_history(self, cmd):
+        if cmd in self.ai_tool_cmds:
+            self.ai_tool_cmds.remove(cmd)
+        self.ai_tool_cmds.insert(0, cmd)
+        self.ai_tool_cmds = self.ai_tool_cmds[:10]
+        self.config["ai_tool_cmds"] = self.ai_tool_cmds
+        save_config(self.config)
+
+    # ---------- 上传相关 ----------
     @run_in_thread
     def quick_upload(self):
         repo = self.repo_combo.get()
@@ -543,16 +1045,16 @@ class App:
         if not repo:
             log("❌ 请先选择仓库")
             return
-        if not self.last_extracted_dir or not os.path.isdir(self.last_extracted_dir):
-            log("❌ 没有当前项目目录，请先下载并解压")
+        proj_dir = self._get_current_project_dir()
+        if not proj_dir:
+            log("❌ 没有有效的项目目录！请先解压项目或手动选择项目目录（不能是工作目录本身）")
             return
-        log(f"📤 快速上传: {self.last_extracted_dir} -> {repo}")
-        self._do_upload(source_dir=self.last_extracted_dir,
+        log(f"📤 快速上传: {proj_dir} -> {repo}")
+        self._do_upload(source_dir=proj_dir,
                         target_repo=repo,
                         target_branch=branch,
                         upload_target=self.upload_target)
 
-    # ---------- 手动上传对话框（支持目标路径） ----------
     def show_manual_upload_dialog(self):
         dlg = Toplevel(self.root)
         dlg.title("手动上传")
@@ -579,7 +1081,7 @@ class App:
         ttk.Label(folder_frame, text="文件夹:").pack(side=LEFT)
         ttk.Entry(folder_frame, textvariable=dir_var, width=40).pack(side=LEFT, fill=X, expand=True)
         ttk.Button(folder_frame, text="浏览...", command=lambda: self._browse_source_dir(dir_var)).pack(side=LEFT, padx=2)
-        ttk.Button(folder_frame, text="当前项目", command=lambda: dir_var.set(self.last_extracted_dir or "")).pack(side=LEFT)
+        ttk.Button(folder_frame, text="当前项目", command=lambda: self._set_current_project_to_dir_var(dir_var)).pack(side=LEFT, padx=2)
 
         file_frame = ttk.Frame(frame)
         file_frame.grid(row=row, column=0, columnspan=3, sticky=EW, pady=5)
@@ -588,7 +1090,6 @@ class App:
         ttk.Button(file_frame, text="浏览...", command=lambda: self._browse_source_file(file_var)).pack(side=LEFT, padx=2)
         row += 1
 
-        # 目标路径（仅文件模式 + 根目录上传时显示）
         target_path_frame = ttk.Frame(frame)
         target_path_frame.grid(row=row, column=0, columnspan=3, sticky=EW, pady=5)
         ttk.Label(target_path_frame, text="目标路径 (可选，如 .github/workflows/):").pack(side=LEFT)
@@ -604,7 +1105,6 @@ class App:
             toggle_target_path_visibility()
         source_mode.trace_add("write", on_source_mode_change)
 
-        # 目标仓库
         ttk.Label(frame, text="目标仓库 (owner/repo):").grid(row=row, column=0, sticky=W, pady=5)
         repo_var = StringVar(value=self.repo_full)
         repo_combo = ttk.Combobox(frame, textvariable=repo_var, values=self.repos_cache, width=40)
@@ -647,6 +1147,13 @@ class App:
             dlg, source_mode, dir_var, file_var, target_path_var, repo_var, branch_var, upload_var
         )).pack(side=LEFT, padx=5)
         ttk.Button(btn_frame_bottom, text="取消", command=dlg.destroy).pack(side=LEFT, padx=5)
+
+    def _set_current_project_to_dir_var(self, dir_var):
+        proj_dir = self._get_current_project_dir()
+        if proj_dir:
+            dir_var.set(proj_dir)
+        else:
+            messagebox.showwarning("警告", "没有有效的项目目录！请先解压项目或手动选择项目目录（不能是工作目录本身）。")
 
     def _browse_source_dir(self, var):
         d = filedialog.askdirectory()
@@ -704,7 +1211,7 @@ class App:
             else:
                 var.set(branches[0])
 
-    # ===================== 通用上传核心 =====================
+    # 通用上传核心
     def _do_upload(self, source_dir=None, zip_path=None, target_repo=None, target_branch=None, upload_target=None, target_path=None):
         if zip_path is None and source_dir is not None:
             zip_path = self._pack_directory(source_dir)
@@ -828,15 +1335,26 @@ class App:
     def on_close(self):
         self.config.update({
             "work_dir": self.work_var.get(),
-            "trae_path": self.trae_var.get(),
+            "trae_path": self.trae_path,
             "auto_extract": self.auto_extract,
             "delete_zip_after_extract": self.delete_zip_after_extract,
             "upload_target": self.upload_target,
             "font_scale": self.font_scale,
-            "custom_build_cmds": self.custom_build_cmds
+            "custom_project_subdir": self.custom_project_subdir,
+            "duplicate_strategy": self.duplicate_strategy,
+            "custom_build_cmds": self.custom_build_cmds,
+            "ai_tool_cmds": self.ai_tool_cmds,
+            "auto_start_ai": self.auto_start_ai,
+            "auto_copy_cmd": self.auto_copy_cmd,
+            "ai_exe_path": self.ai_exe_path,
+            "copy_cmd_history": self.copy_cmd_history,
+            "show_btn_extract": self.show_btn_extract,
+            "show_btn_open_dir": self.show_btn_open_dir,
+            "show_btn_build": self.show_btn_build,
+            "show_btn_quick_upload": self.show_btn_quick_upload,
+            "show_btn_manual_upload": self.show_btn_manual_upload,
+            "show_btn_ai": self.show_btn_ai,
         })
-        self.config.pop("project_dir", None)
-        self.config.pop("dl_dir", None)
         save_config(self.config)
         self.root.destroy()
 
