@@ -1,0 +1,2257 @@
+
+
+下面是gemin:
+Okay, converting a full-fledged Python Tkinter application to an Android Kotlin application using Jetpack Compose is a substantial task, as it involves a complete rewrite due to fundamental differences in language, UI framework, threading model, and platform APIs.
+
+I will provide a structured Android project with the core functionalities translated to Kotlin and Jetpack Compose. This includes:
+
+Project Structure: Standard Android project with Activities, ViewModels, and Composables.
+Language: Python to Kotlin.
+UI Framework: Tkinter to Jetpack Compose.
+Networking: requests to Retrofit + OkHttp + Kotlin Coroutines.
+Configuration: json file to Android DataStore (preferred over SharedPreferences for modern apps).
+Threading: Python's implicit threading to explicit Kotlin Coroutines for background tasks.
+File System: os to Android's storage APIs (Context.filesDir, ContentResolver for downloads).
+Messages/Dialogs: Tkinter messagebox to Android AlertDialog / Snackbar.
+Font Scaling: Custom CompositionLocalProvider in Compose.
+Treeview: This is the most complex component to port directly. I'll implement a simplified, expandable list using LazyColumn for the file tree.
+File Download: Uses Android's Storage Access Framework via ActivityResultLauncher to let the user pick a save location.
+
+Project Setup (build.gradle.kts - app module):
+
+You'll need these dependencies in your app/build.gradle.kts file:
+
+kotlin
+复制代码
+收起
+// build.gradle.kts (app module)
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("kotlin-kapt") // For Hilt or other annotation processors, or remove if not needed
+    id("kotlinx-serialization") // For kotlinx.serialization, or remove if using Gson
+}
+
+android {
+    namespace = "com.example.githubexplorer"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.example.githubexplorer"
+        minSdk = 24
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        vectorDrawables {
+            useSupportLibrary = true
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
+    }
+    kotlinOptions {
+        jvmTarget = "1.8"
+    }
+    buildFeatures {
+        compose = true
+    }
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.1" // Check latest compatible version
+    }
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+}
+
+dependencies {
+    // AndroidX & Compose
+    implementation(platform("androidx.compose:compose-bom:2023.08.00")) // Check latest stable BOM
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
+    implementation("androidx.activity:activity-compose:1.8.2")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.6.2")
+    implementation("androidx.navigation:navigation-compose:2.7.6") // For navigation
+
+    // DataStore (for configuration)
+    implementation("androidx.datastore:datastore-preferences:1.0.0")
+
+    // Retrofit & OkHttp (for network requests)
+    implementation("com.squareup.retrofit2:retrofit:2.9.0")
+    implementation("com.squareup.retrofit2:converter-gson:2.9.0") // Using Gson for JSON parsing
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+
+    // Coroutines
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // Icons
+    implementation("androidx.compose.material:material-icons-extended")
+
+    // Coil (for image loading, if you were to display avatars etc.) - not strictly needed for current scope but good practice
+    // implementation("io.coil-kt:coil-compose:2.5.0")
+
+    // Testing (optional)
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2023.08.00"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+复制
+
+AndroidManifest.xml:
+
+You need to add the internet permission. Storage permissions are handled via Storage Access Framework, so no explicit manifest permission for modern Android versions is required for typical artifact downloads.
+
+xml
+复制代码
+收起
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:name=".GitHubExplorerApp"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.GitHubExplorer">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.GitHubExplorer">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
+复制
+
+Kotlin Files:
+
+Create the following files and folders inside app/src/main/java/com/example/githubexplorer/.
+
+1. GitHubExplorerApp.kt (Application Class):
+
+kotlin
+复制代码
+收起
+package com.example.githubexplorer
+
+import android.app.Application
+import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.preferencesDataStore
+
+// Global DataStore instance for app preferences
+val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "github_browser_config")
+
+class GitHubExplorerApp : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        // Initialize anything needed application-wide
+    }
+}
+复制
+
+2. Constants.kt:
+
+kotlin
+复制代码
+收起
+package com.example.githubexplorer
+
+object Constants {
+    const val GITHUB_BASE_URL = "https://api.github.com/"
+    const val DEFAULT_FONT_SCALE = 1.0f
+}
+复制
+
+3. ConfigManager.kt:
+
+kotlin
+复制代码
+收起
+package com.example.githubexplorer
+
+import android.content.Context
+import androidx.datastore.preferences.core.doublePreferencesKey
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+
+data class AppConfig(
+    val token: String = "",
+    val fontScale: Float = Constants.DEFAULT_FONT_SCALE,
+    val lastSearchQuery: String = "",
+    val lastRepoFullName: String = ""
+)
+
+class ConfigManager(private val context: Context) {
+
+    companion object {
+        private val TOKEN_KEY = stringPreferencesKey("github_token")
+        private val FONT_SCALE_KEY = doublePreferencesKey("font_scale")
+        private val LAST_SEARCH_QUERY_KEY = stringPreferencesKey("last_search_query")
+        private val LAST_REPO_FULL_NAME_KEY = stringPreferencesKey("last_repo_full_name")
+    }
+
+    suspend fun loadConfig(): AppConfig {
+        return context.dataStore.data.map { preferences ->
+            AppConfig(
+                token = preferences[TOKEN_KEY] ?: "",
+                fontScale = (preferences[FONT_SCALE_KEY] ?: Constants.DEFAULT_FONT_SCALE.toDouble()).toFloat(),
+                lastSearchQuery = preferences[LAST_SEARCH_QUERY_KEY] ?: "",
+                lastRepoFullName = preferences[LAST_REPO_FULL_NAME_KEY] ?: ""
+            )
+        }.first()
+    }
+
+    suspend fun saveConfig(config: AppConfig) {
+        context.dataStore.edit { preferences ->
+            preferences[TOKEN_KEY] = config.token
+            preferences[FONT_SCALE_KEY] = config.fontScale.toDouble()
+            preferences[LAST_SEARCH_QUERY_KEY] = config.lastSearchQuery
+            preferences[LAST_REPO_FULL_NAME_KEY] = config.lastRepoFullName
+        }
+    }
+
+    suspend fun saveToken(token: String) {
+        context.dataStore.edit { preferences ->
+            preferences[TOKEN_KEY] = token
+        }
+    }
+
+    suspend fun saveFontScale(scale: Float) {
+        context.dataStore.edit { preferences ->
+            preferences[FONT_SCALE_KEY] = scale.toDouble()
+        }
+    }
+
+    suspend fun saveLastSearchQuery(query: String) {
+        context.dataStore.edit { preferences ->
+            preferences[LAST_SEARCH_QUERY_KEY] = query
+        }
+    }
+
+    suspend fun saveLastRepoFullName(fullName: String) {
+        context.dataStore.edit { preferences ->
+            preferences[LAST_REPO_FULL_NAME_KEY] = fullName
+        }
+    }
+}
+复制
+
+4. data/github/GitHubApi.kt (Retrofit Interface and Data Models):
+
+kotlin
+复制代码
+收起
+package com.example.githubexplorer.data.github
+
+import com.example.githubexplorer.Constants
+import com.google.gson.annotations.SerializedName
+import okhttp3.Interceptor
+import okhttp3.OkHttpClient
+import okhttp3.Response
+import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.HttpException
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import retrofit2.http.*
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+
+// --- Data Models ---
+
+data class GitHubUser(
+    val login: String,
+    val id: Long,
+    @SerializedName("avatar_url") val avatarUrl: String,
+    val name: String?
+)
+
+data class GitHubRepo(
+    val id: Long,
+    @SerializedName("full_name") val fullName: String,
+    val name: String,
+    val owner: GitHubUser,
+    val description: String?,
+    @SerializedName("default_branch") val defaultBranch: String
+)
+
+data class TreeEntry(
+    val path: String,
+    val mode: String,
+    val type: String, // "blob" for file, "tree" for directory
+    val sha: String,
+    val size: Long? = null,
+    val url: String
+)
+
+data class GitTreeResponse(
+    val sha: String,
+    val url: String,
+    val tree: List<TreeEntry>,
+    val truncated: Boolean
+)
+
+data class FileContentResponse(
+    val name: String,
+    val path: String,
+    val sha: String,
+    val size: Long,
+    val url: String,
+    @SerializedName("html_url") val htmlUrl: String,
+    @SerializedName("git_url") val gitUrl: String,
+    val downloadUrl: String?,
+    val type: String,
+    val content: String, // Base64 encoded content
+    val encoding: String
+)
+
+data class Workflow(
+    val id: Long,
+    val name: String,
+    val path: String,
+    val state: String, // "active", "disabled_manually", "disabled_for_fork", etc.
+    @SerializedName("html_url") val htmlUrl: String
+)
+
+data class WorkflowsResponse(
+    @SerializedName("total_count") val totalCount: Int,
+    val workflows: List<Workflow>
+)
+
+data class WorkflowRun(
+    val id: Long,
+    val name: String?,
+    val headBranch: String,
+    val status: String, // "queued", "in_progress", "completed", etc.
+    val conclusion: String?, // "success", "failure", "cancelled", etc.
+    @SerializedName("created_at") val createdAt: String,
+    @SerializedName("updated_at") val updatedAt: String,
+    @SerializedName("html_url") val htmlUrl: String,
+    @SerializedName("workflow_id") val workflowId: Long
+)
+
+data class WorkflowRunsResponse(
+    @SerializedName("total_count") val totalCount: Int,
+    @SerializedName("workflow_runs") val workflowRuns: List<WorkflowRun>
+)
+
+data class Job(
+    val id: Long,
+    val name: String,
+    val status: String,
+    val conclusion: String?,
+    @SerializedName("started_at") val startedAt: String,
+    @SerializedName("completed_at") val completedAt: String?,
+    @SerializedName("html_url") val htmlUrl: String
+)
+
+data class JobsResponse(
+    @SerializedName("total_count") val totalCount: Int,
+    val jobs: List<Job>
+)
+
+data class Artifact(
+    val id: Long,
+    val name: String,
+    @SerializedName("size_in_bytes") val sizeInBytes: Long,
+    @SerializedName("archive_download_url") val archiveDownloadUrl: String,
+    @SerializedName("expired") val expired: Boolean
+)
+
+data class ArtifactsResponse(
+    @SerializedName("total_count") val totalCount: Int,
+    val artifacts: List```html 
+)
+
+// --- Retrofit Interface ---
+
+interface GitHubApi {
+
+    @GET("user")
+    suspend fun getUser(): GitHubUser
+
+    @GET("user/repos")
+    suspend fun listUserRepos(
+        @Query("per_page") perPage: Int = 100,
+        @Query("page") page: Int = 1,
+        @Query("sort") sort: String = "updated"
+    ): List<GitHubRepo>
+
+    @GET("search/repositories")
+    suspend fun searchRepos(
+        @Query("q") query: String,
+        @Query("per_page") perPage: Int = 100,
+        @Query("page") page: Int = 1
+    ): RepoSearchResponse // Search response has "items" field
+
+    data class RepoSearchResponse(val items: List<GitHubRepo>)
+
+    @GET("repos/{owner}/{repo}")
+    suspend fun getRepo(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String
+    ): GitHubRepo // Used to get default branch
+
+    @GET("repos/{owner}/{repo}/git/ref/heads/{branch}")
+    suspend fun getBranchRef(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("branch") branch: String
+    ): BranchRefResponse
+
+    data class BranchRefResponse(val `object`: RefObject)
+    data class RefObject(val sha: String, val type: String, val url: String)
+
+    @GET("repos/{owner}/{repo}/git/trees/{tree_sha}")
+    suspend fun getRepoTree(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("tree_sha") treeSha: String,
+        @Query("recursive") recursive: Int? = null // 1 for recursive, null for non-recursive
+    ): GitTreeResponse
+
+    @GET("repos/{owner}/{repo}/contents/{path}")
+    suspend fun getFileContent(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("path") path: String,
+        @Query("ref") ref: String = "main" // Branch or commit SHA
+    ): FileContentResponse
+
+    // --- Actions API ---
+
+    @GET("repos/{owner}/{repo}/actions/workflows")
+    suspend fun listWorkflows(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String
+    ): WorkflowsResponse
+
+    @POST("repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches")
+    suspend fun dispatchWorkflow(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("workflow_id") workflowId: Long,
+        @Body payload: WorkflowDispatchPayload
+    )
+
+    data class WorkflowDispatchPayload(@SerializedName("ref") val ref: String)
+
+    @GET("repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs")
+    suspend fun listWorkflowRuns(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("workflow_id") workflowId: Long,
+        @Query("status") status: String? = null,
+        @Query("per_page") perPage: Int = 30,
+        @Query("page") page: Int = 1
+    ): WorkflowRunsResponse
+
+    @GET("repos/{owner}/{repo}/actions/runs/{run_id}/jobs")
+    suspend fun getRunJobs(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("run_id") runId: Long
+    ): JobsResponse
+
+    @GET("repos/{owner}/{repo}/actions/jobs/{job_id}/logs")
+    suspend fun getJobLog(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("job_id") jobId: Long
+    ): String // Logs are plain text
+
+    @GET("repos/{owner}/{repo}/actions/runs/{run_id}/artifacts")
+    suspend fun listRunArtifacts(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("run_id") runId: Long
+    ): ArtifactsResponse
+
+    // No direct Retrofit call for artifact download, handled by OkHttp directly as it's a stream
+}
+
+// --- Network Client Setup ---
+
+class AuthInterceptor(private val token: String) : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val original = chain.request()
+        val requestBuilder = original.newBuilder()
+            .header("Authorization", "token $token")
+            .header("Accept", "application/vnd.github.v3+json")
+        val request = requestBuilder.build()
+        return chain.proceed(request)
+    }
+}
+
+object GitHubHttpClient {
+    private var retrofit: Retrofit? = null
+    private var okHttpClient: OkHttpClient? = null
+
+    @Synchronized
+    fun getClient(token: String): GitHubApi {
+        if (retrofit == null || okHttpClient?.interceptors?.find { it is AuthInterceptor && it.token != token } != null) {
+            val logging = HttpLoggingInterceptor().apply {
+                level = HttpLoggingInterceptor.Level.BODY // Adjust level as needed
+            }
+
+            okHttpClient = OkHttpClient.Builder()
+                .addInterceptor(AuthInterceptor(token))
+                .addInterceptor(logging)
+                .build()
+
+            retrofit = Retrofit.Builder()
+                .baseUrl(Constants.GITHUB_BASE_URL)
+                .client(okHttpClient!!)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+        }
+        return retrofit!!.create(GitHubApi::class.java)
+    }
+
+    // For direct OkHttp calls (e.g., artifact download redirects)
+    @Synchronized
+    fun getPlainClient(token: String? = null): OkHttpClient {
+        val builder = OkHttpClient.Builder()
+        if (token != null) {
+            builder.addInterceptor(AuthInterceptor(token))
+        }
+        return builder.build()
+    }
+
+    // Helper to URL-encode paths for contents API
+    fun encodePath(path: String): String {
+        return URLEncoder.encode(path, StandardCharsets.UTF_8.toString())
+    }
+}
+复制
+
+5. data/github/GitHubRepository.kt:
+
+kotlin
+复制代码
+收起
+package com.example.githubexplorer.data.github
+
+import android.util.Base64
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.withContext
+import retrofit2.HttpException
+import java.io.File
+import java.io.IOException
+
+class GitHubRepository(private val api: GitHubApi, private val okHttpClient: OkHttpClient) {
+
+    suspend fun getUser(): GitHubUser = api.getUser()
+
+    suspend fun listUserRepos(): List<GitHubRepo> = withContext(Dispatchers.IO) {
+        val allRepos = mutableListOf<GitHubRepo>()
+        var page = 1
+        while (true) {
+            val repos = api.listUserRepos(page = page)
+            if (repos.isEmpty()) break
+            allRepos.addAll(repos)
+            if (repos.size < 100) break
+            page++
+        }
+        allRepos
+    }
+
+    suspend fun searchRepos(query: String): List<GitHubRepo> = withContext(Dispatchers.IO) {
+        val allRepos = mutableListOf<GitHubRepo>()
+        var page = 1
+        while (true) {
+            val response = api.searchRepos(query = query, page = page)
+            val repos = response.items
+            if (repos.isEmpty()) break
+            allRepos.addAll(repos)
+            if (repos.size < 100) break
+            page++
+        }
+        allRepos
+    }
+
+    suspend fun getRepoDefaultBranch(owner: String, repo: String): String {
+        return api.getRepo(owner, repo).defaultBranch
+    }
+
+    suspend fun getRepoTree(owner: String, repo: String, branch: String, recursive: Boolean = true): List<TreeEntry> = withContext(Dispatchers.IO) {
+        val ref = api.getBranchRef(owner, repo, branch)
+        val commitSha = ref.`object`.sha
+        val recursiveParam = if (recursive) 1 else null
+        api.getRepoTree(owner, repo, commitSha, recursiveParam).tree
+    }
+
+    @Throws(Exception::class)
+    suspend fun getFileContent(owner: String, repo: String, path: String, branch: String = "main"): Any? = withContext(Dispatchers.IO) {
+        try {
+            val encodedPath = GitHubHttpClient.encodePath(path)
+            val response = api.getFileContent(owner, repo, encodedPath, branch)
+            if (response.type == "dir") {
+                return@withContext null // It's a directory, not a file content
+            }
+
+            if (response.encoding == "base64") {
+                val decoded = Base64.decode(response.content, Base64.DEFAULT)
+                try {
+                    return@withContext decoded.toString(Charsets.UTF_8)
+                } catch (e: Exception) {
+                    // Not UTF-8, return bytes
+                    return@withContext decoded
+                }
+            }
+            return@withContext response.content
+        } catch (e: HttpException) {
+            if (e.code() == 404) { // File not found or not a file
+                return@withContext null
+            }
+            throw e
+        } catch (e: Exception) {
+            throw e
+        }
+    }
+
+    // --- Actions API ---
+
+    suspend fun listWorkflows(owner: String, repo: String): List<Workflow> {
+        return api.listWorkflows(owner, repo).workflows
+    }
+
+    suspend fun dispatchWorkflow(owner: String, repo: String, workflowId: Long, ref: String) {
+        api.dispatchWorkflow(owner, repo, workflowId, WorkflowDispatchPayload(ref))
+    }
+
+    suspend fun listWorkflowRuns(owner: String, repo: String, workflowId: Long, status: String? = null, perPage: Int = 30, page: Int = 1): List<WorkflowRun> {
+        return api.listWorkflowRuns(owner, repo, workflowId, status, perPage, page).workflowRuns
+    }
+
+    suspend fun getRunJobs(owner: String, repo: String, runId: Long): List<Job> {
+        return api.getRunJobs(owner, repo, runId).jobs
+    }
+
+    suspend fun getJobLog(owner: String, repo: String, jobId: Long): String = withContext(Dispatchers.IO) {
+        // GitHub API for job logs can return a redirect. Retrofit handles redirects for JSON,
+        // but for plain text body it might need manual handling if the log is very large.
+        // Retrofit's default client usually follows redirects for text/plain as well.
+        // However, the original Python code had a specific check, so keeping an eye on it.
+        api.getJobLog(owner, repo, jobId)
+    }
+
+    suspend fun getRunLogsCombined(owner: String, repo: String, runId: Long): String = withContext(Dispatchers.IO) {
+        val jobs = getRunJobs(owner, repo, runId)
+        val logParts = jobs.map { job ->
+            async {
+                try {
+                    val log = getJobLog(owner, repo, job.id)
+                    "--- Job: ${job.name} (${job.id}) ---\n$log\n"
+                } catch (e: Exception) {
+                    "--- Job: ${job.name} (${job.id}) - Error loading log ---\n${e.message}\n"
+                }
+            }
+        }.awaitAll()
+        logParts.joinToString("\n")
+    }
+
+
+    suspend fun listRunArtifacts(owner: String, repo: String, runId: Long): List```html  {
+        return api.listRunArtifacts(owner, repo, runId).artifacts
+    }
+
+    suspend fun downloadArtifact(artifactUrl: String, destinationFile: File) = withContext(Dispatchers.IO) {
+        okHttpClient.newCall(okhttp3.Request.Builder().url(artifactUrl).build()).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("Failed to download artifact: ${response.code} ${response.message}")
+            }
+            response.body?.byteStream()?.use { input ->
+                destinationFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            } ?: throw IOException("Empty response body for artifact download")
+        }
+    }
+}
+复制
+
+6. ui/login/LoginScreen.kt & LoginViewModel.kt:
+
+kotlin
+复制代码
+收起
+package com.example.githubexplorer.ui.login
+
+import android.content.Context
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.githubexplorer.ConfigManager
+import com.example.githubexplorer.data.github.GitHubHttpClient
+import com.example.githubexplorer.data.github.GitHubRepository
+import com.example.githubexplorer.data.github.GitHubUser
+import kotlinx.coroutines.launch
+import retrofit2.HttpException
+import java.io.IOException
+
+class LoginViewModel(private val configManager: ConfigManager, private val context: Context) : ViewModel() {
+
+    val token = mutableStateOf("")
+    val showToken = mutableStateOf(false)
+    val isLoading = mutableStateOf(false)
+    val errorMessage = mutableStateOf<String?>(null)
+    val userLoggedIn = mutableStateOf<GitHubUser?>(null)
+
+    init {
+        viewModelScope.launch {
+            token.value = configManager.loadConfig().token
+        }
+    }
+
+    fun toggleShowToken() {
+        showToken.value = !showToken.value
+    }
+
+    fun login() {
+        val currentToken = token.value.trim()
+        if (currentToken.isBlank()) {
+            errorMessage.value = "Token cannot be empty."
+            return
+        }
+
+        isLoading.value = true
+        errorMessage.value = null
+
+        viewModelScope.launch {
+            try {
+                val api = GitHubHttpClient.getClient(currentToken)
+                val repository = GitHubRepository(api, GitHubHttpClient.getPlainClient(currentToken))
+                val user = repository.getUser()
+                configManager.saveToken(currentToken)
+                userLoggedIn.value = user
+            } catch (e: HttpException) {
+                val errorBody = e.response()?.errorBody()?.string()
+                errorMessage.value = "API Error ${e.code()}: ${errorBody ?: e.message}"
+            } catch (e: IOException) {
+                errorMessage.value = "Network Error: ${e.message}"
+            } catch (e: Exception) {
+                errorMessage.value = "An unexpected error occurred: ${e.message}"
+            } finally {
+                isLoading.value = false
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LoginScreen(
+    viewModel: LoginViewModel,
+    onLoginSuccess: (GitHubRepository, GitHubUser) -> Unit
+) {
+    val token by viewModel.token
+    val showToken by viewModel.showToken
+    val isLoading by viewModel.isLoading
+    val errorMessage by viewModel.errorMessage
+    val userLoggedIn by viewModel.userLoggedIn
+
+    LaunchedEffect(userLoggedIn) {
+        userLoggedIn?.let { user ->
+            val api = GitHubHttpClient.getClient(token)
+            val repository = GitHubRepository(api, GitHubHttpClient.getPlainClient(token))
+            onLoginSuccess(repository, user)
+        }
+    }
+
+    if (errorMessage != null) {
+        AlertDialog(
+            onDismissRequest = { viewModel.errorMessage.value = null },
+            title = { Text("Error") },
+            text = { Text(errorMessage!!) },
+            confirmButton = {
+                Button(onClick = { viewModel.errorMessage.value = null }) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "Login to GitHub",
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+
+            OutlinedTextField(
+                value = token,
+                onValueChange = { viewModel.token.value = it },
+                label = { Text("Personal Access Token") },
+                singleLine = true,
+                visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    val image = if (showToken) Icons.Filled.Visibility else Icons.Filled.VisibilityOff
+                    IconButton(onClick = viewModel::toggleShowToken) {
+                        Icon(imageVector = image, contentDescription = "Toggle password visibility")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(
+                onClick = viewModel::login,
+                enabled = !isLoading,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                } else {
+                    Text("Login")
+                }
+            }
+        }
+    }
+}
+
+// For preview purposes, you'd need a mock ViewModel
+@Preview(showBackground = true)
+@Composable
+fun LoginScreenPreview() {
+    // This preview won't work without a proper context for the ViewModel
+    // You'd typically create a mock ViewModel or run it on a device/emulator.
+    // For now, let's just show the UI components.
+    MaterialTheme {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "Login to GitHub",
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+
+            var previewToken by remember { mutableStateOf("ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") }
+            var previewShowToken by remember { mutableStateOf(false) }
+
+            OutlinedTextField(
+                value = previewToken,
+                onValueChange = { previewToken = it },
+                label = { Text("Personal Access Token") },
+                singleLine = true,
+                visualTransformation = if (previewShowToken) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    val image = if (previewShowToken) Icons.Filled.Visibility else Icons.Filled.VisibilityOff
+                    IconButton(onClick = { previewShowToken = !previewShowToken }) {
+                        Icon(imageVector = image, contentDescription = "Toggle password visibility")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(
+                onClick = { /* TODO: handle login */ },
+                enabled = true,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Login")
+            }
+        }
+    }
+}
+复制
+
+7. ui/main/MainScreen.kt & MainViewModel.kt (and its sub-composables):
+
+This is the largest part. I'll break it down into the MainViewModel and the main MainScreen composable, which will then use several sub-composables.
+
+ui/main/MainViewModel.kt:
+
+kotlin
+复制代码
+收起
+package com.example.githubexplorer.ui.main
+
+import android.content.Context
+import android.net.Uri
+import android.util.Log
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.example.githubexplorer.AppConfig
+import com.example.githubexplorer.ConfigManager
+import com.example.githubexplorer.data.github.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
+import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.*
+
+data class CurrentRepoInfo(
+    val owner: String,
+    val repoName: String,
+    val branch: String,
+    val fullName: String // For display and saving last repo
+)
+
+class MainViewModel(
+    private val configManager: ConfigManager,
+    private val repository: GitHubRepository,
+    private val appConfig: AppConfig // Initial config loaded during app start
+) : ViewModel() {
+
+    // Global UI State
+    private val _statusMessage = MutableStateFlow("Ready")
+    val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
+
+    private val _showSnackbar = MutableStateFlow<String?>(null)
+    val showSnackbar: StateFlow<String?> = _showSnackbar.asStateFlow()
+
+    private val _showDialog = MutableStateFlow<String?>(null)
+    val showDialog: StateFlow<String?> = _showDialog.asStateFlow()
+
+    fun showSnackbarMessage(message: String) { _showSnackbar.value = message }
+    fun dismissSnackbar() { _showSnackbar.value = null }
+    fun showAlertDialog(message: String) { _showDialog.value = message }
+    fun dismissAlertDialog() { _showDialog.value = null }
+
+    private fun setStatus(message: String) { _statusMessage.value = message }
+
+    // Repositories Tab
+    val searchQuery = mutableStateOf(appConfig.lastSearchQuery)
+    val repos = mutableStateListOf<GitHubRepo>()
+    val isLoadingRepos = mutableStateOf(false)
+    val currentRepo = mutableStateOf<CurrentRepoInfo?>(null)
+
+    // Directory Tree Tab
+    val treeEntries = mutableStateListOf<TreeEntryNode>()
+    val expandedNodes = mutableStateMapOf<String, Boolean>() // Path -> isExpanded
+    val isLoadingTree = mutableStateOf(false)
+
+    // File Content Display
+    val fileContent = mutableStateOf<String?>(null)
+    val isBinaryFile = mutableStateOf(false)
+    val isLoadingContent = mutableStateOf(false)
+
+    // Actions Tab
+    val workflows = mutableStateListOf<Workflow>()
+    val selectedWorkflow = mutableStateOf<Workflow?>(null)
+    val workflowRuns = mutableStateListOf<WorkflowRun>()
+    val selectedRun = mutableStateOf<WorkflowRun?>(null)
+    val workflowRunStatusFilter = mutableStateOf("所有") // "所有", "进行中", "成功", "失败"
+    val isLoadingWorkflows = mutableStateOf(false)
+    val isLoadingRuns = mutableStateOf(false)
+    val isLoadingRunLog = mutableStateOf(false)
+    val pollingJob = mutableStateOf<Job?>(null)
+
+    val fontScale = mutableStateOf(appConfig.fontScale)
+
+    init {
+        // Load initial data
+        loadMyRepos()
+        appConfig.lastRepoFullName.takeIf { it.isNotEmpty() }?.let { lastRepoFullName ->
+            viewModelScope.launch {
+                val parts = lastRepoFullName.split("/")
+                if (parts.size == 2) {
+                    val owner = parts[0]
+                    val repoName = parts[1]
+                    try {
+                        val repoData = repository.getRepo(owner, repoName)
+                        val branch = repository.getRepoDefaultBranch(owner, repoName)
+                        currentRepo.value = CurrentRepoInfo(owner, repoName, branch, repoData.fullName)
+                        loadRepoTree(owner, repoName, branch)
+                        loadWorkflows() // Also load workflows for the selected repo
+                    } catch (e: Exception) {
+                        Log.e("MainViewModel", "Failed to load last repo: $lastRepoFullName", e)
+                        showSnackbarMessage("Failed to load last repo: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    fun loadMyRepos() {
+        if (isLoadingRepos.value) return
+        isLoadingRepos.value = true
+        setStatus("Loading my repositories...")
+        viewModelScope.launch {
+            try {
+                val fetchedRepos = repository.listUserRepos()
+                repos.clear()
+                repos.addAll(fetchedRepos.sortedByDescending { it.updatedAt }) // Assuming updatedAt exists or add a dummy sort
+                if (repos.isEmpty()) showSnackbarMessage("No repositories found.")
+            } catch (e: Exception) {
+                showSnackbarMessage("Failed to load repositories: ${e.message}")
+            } finally {
+                isLoadingRepos.value = false
+                setStatus("Ready")
+            }
+        }
+    }
+
+    fun searchRepos() {
+        val query = searchQuery.value.trim()
+        if (query.isBlank()) {
+            showSnackbarMessage("Search query cannot be empty.")
+            return
+        }
+        if (isLoadingRepos.value) return
+        isLoadingRepos.value = true
+        setStatus("Searching repositories...")
+        viewModelScope.launch {
+            try {
+                val fetchedRepos = repository.searchRepos(query)
+                repos.clear()
+                repos.addAll(fetchedRepos)
+                if (repos.isEmpty()) showSnackbarMessage("No matching repositories found.")
+                configManager.saveLastSearchQuery(query)
+            } catch (e: Exception) {
+                showSnackbarMessage("Failed to search repositories: ${e.message}")
+            } finally {
+                isLoadingRepos.value = false
+                setStatus("Ready")
+            }
+        }
+    }
+
+    fun selectRepo(repo: GitHubRepo) {
+        val owner = repo.owner.login
+        val repoName = repo.name
+        val fullName = repo.fullName
+        setStatus("Fetching default branch...")
+        viewModelScope.launch {
+            try {
+                val branch = repository.getRepoDefaultBranch(owner, repoName)
+                currentRepo.value = CurrentRepoInfo(owner, repoName, branch, fullName)
+                loadRepoTree(owner, repoName, branch)
+                loadWorkflows()
+                configManager.saveLastRepoFullName(fullName)
+            } catch (e: Exception) {
+                showSnackbarMessage("Failed to get default branch: ${e.message}")
+                setStatus("Ready")
+            }
+        }
+    }
+
+    private fun loadRepoTree(owner: String, repoName: String, branch: String) {
+        if (isLoadingTree.value) return
+        isLoadingTree.value = true
+        setStatus("Loading directory tree...")
+        treeEntries.clear()
+        expandedNodes.clear()
+        viewModelScope.launch {
+            try {
+                val entries = repository.getRepoTree(owner, repoName, branch)
+                val rootNodes = buildTree(entries)
+                treeEntries.addAll(rootNodes)
+            } catch (e: Exception) {
+                showSnackbarMessage("Failed to load directory tree: ${e.message}")
+            } finally {
+                isLoadingTree.value = false
+                setStatus("Ready")
+            }
+        }
+    }
+
+    private fun buildTree(flatEntries: List<TreeEntry>): List<TreeEntryNode> {
+        val rootNodes = mutableListOf<TreeEntryNode>()
+        val allNodesMap = mutableMapOf<String, TreeEntryNode>()
+
+        // Create all nodes and map them by path
+        for (entry in flatEntries) {
+            val node = TreeEntryNode(
+                path = entry.path,
+                name = entry.path.substringAfterLast('/'),
+                type = entry.type,
+                children = mutableListOf()
+            )
+            allNodesMap[entry.path] = node
+        }
+
+        // Build the hierarchy
+        for (node in allNodesMap.values) {
+            val parentPath = node.path.substringBeforeLast('/', "")
+            if (parentPath.isEmpty()) {
+                rootNodes.add(node)
+            } else {
+                allNodesMap[parentPath]?.children?.add(node)
+            }
+        }
+
+        // Sort children alphabetically, directories first
+        fun sortChildren(nodes: List<TreeEntryNode>) {
+            nodes.forEach { node ->
+                node.children.sortWith(compareBy({ it.type != "tree" }, { it.name.lowercase(Locale.ROOT) }))
+                sortChildren(node.children)
+            }
+        }
+        sortChildren(rootNodes)
+        rootNodes.sortWith(compareBy({ it.type != "tree" }, { it.name.lowercase(Locale.ROOT) }))
+
+        return rootNodes
+    }
+
+
+    fun toggleNodeExpansion(nodePath: String) {
+        expandedNodes[nodePath] = !(expandedNodes[nodePath] ?: false)
+    }
+
+    fun displayFileContent(path: String) {
+        val repoInfo = currentRepo.value ?: return
+        clearContent()
+        isLoadingContent.value = true
+        setStatus("Loading file content...")
+        viewModelScope.launch {
+            try {
+                val content = repository.getFileContent(repoInfo.owner, repoInfo.repoName, path, repoInfo.branch)
+                when (content) {
+                    is String -> fileContent.value = content
+                    is ByteArray -> {
+                        fileContent.value = "[Binary file, cannot be previewed directly]"
+                        isBinaryFile.value = true
+                    }
+                    else -> fileContent.value = "Cannot retrieve content for this item (may be directory or too large)."
+                }
+            } catch (e: Exception) {
+                fileContent.value = "Error loading content: ${e.message}"
+            } finally {
+                isLoadingContent.value = false
+                setStatus("Ready")
+            }
+        }
+    }
+
+    private fun clearContent() {
+        fileContent.value = null
+        isBinaryFile.value = false
+        isLoadingContent.value = false
+    }
+
+    // --- Actions Tab Logic ---
+
+    fun loadWorkflows() {
+        val repoInfo = currentRepo.value ?: run {
+            showSnackbarMessage("Please select a repository first.")
+            return
+        }
+        if (isLoadingWorkflows.value) return
+        isLoadingWorkflows.value = true
+        setStatus("Loading workflows...")
+        viewModelScope.launch {
+            try {
+                val fetchedWorkflows = repository.listWorkflows(repoInfo.owner, repoInfo.repoName)
+                workflows.clear()
+                workflows.addAll(fetchedWorkflows)
+                if (workflows.isNotEmpty()) {
+                    selectedWorkflow.value = workflows.first()
+                    loadWorkflowRuns()
+                } else {
+                    selectedWorkflow.value = null
+                    workflowRuns.clear()
+                }
+                setStatus("Loaded ${workflows.size} workflows.")
+            } catch (e: Exception) {
+                showSnackbarMessage("Failed to load workflows: ${e.message}")
+            } finally {
+                isLoadingWorkflows.value = false
+                setStatus("Ready")
+            }
+        }
+    }
+
+    fun selectWorkflow(workflow: Workflow) {
+        selectedWorkflow.value = workflow
+        loadWorkflowRuns()
+    }
+
+    fun loadWorkflowRuns() {
+        val repoInfo = currentRepo.value ?: return
+        val wf = selectedWorkflow.value ?: run {
+            workflowRuns.clear()
+            return
+        }
+        if (isLoadingRuns.value) return
+        isLoadingRuns.value = true
+        setStatus("Loading workflow runs...")
+        // Cancel existing polling if any
+        pollingJob.value?.cancel()
+
+        viewModelScope.launch {
+            try {
+                val apiStatus = when (workflowRunStatusFilter.value) {
+                    "进行中" -> "in_progress"
+                    "成功" -> "success"
+                    "失败" -> "failure"
+                    else -> null
+                }
+                val fetchedRuns = repository.listWorkflowRuns(
+                    repoInfo.owner, repoInfo.repoName, wf.id, apiStatus
+                )
+                workflowRuns.clear()
+                workflowRuns.addAll(fetchedRuns)
+
+                // If any run is in_progress, start polling
+                if (fetchedRuns.any { it.status == "in_progress" || it.status == "queued" }) {
+                    startPollingRuns()
+                } else {
+                    setStatus("Loaded ${workflowRuns.size} workflow runs.")
+                }
+            } catch (e: Exception) {
+                showSnackbarMessage("Failed to load workflow runs: ${e.message}")
+            } finally {
+                isLoadingRuns.value = false
+                // Do not set status to "Ready" immediately if polling started
+            }
+        }
+    }
+
+    private fun startPollingRuns() {
+        pollingJob.value?.cancel() // Cancel any previous polling
+        pollingJob.value = viewModelScope.launch {
+            val repoInfo = currentRepo.value ?: return@launch
+            val wf = selectedWorkflow.value ?: return@launch
+            setStatus("Polling workflow runs...")
+            while (true) {
+                delay(5000) // Poll every 5 seconds
+                try {
+                    val apiStatus = when (workflowRunStatusFilter.value) {
+                        "进行中" -> "in_progress"
+                        "成功" -> "success"
+                        "失败" -> "failure"
+                        else -> null
+                    }
+                    val fetchedRuns = repository.listWorkflowRuns(
+                        repoInfo.owner, repoInfo.repoName, wf.id, apiStatus
+                    )
+                    workflowRuns.clear()
+                    workflowRuns.addAll(fetchedRuns)
+
+                    if (!fetchedRuns.any { it.status == "in_progress" || it.status == "queued" }) {
+                        setStatus("Workflow runs updated. Polling stopped.")
+                        break // Stop polling if no runs are in progress
+                    }
+                } catch (e: Exception) {
+                    Log.e("MainViewModel", "Error during polling: ${e.message}")
+                    setStatus("Error polling runs. Polling stopped.")
+                    break
+                }
+            }
+        }
+    }
+
+
+    fun triggerWorkflow() {
+        val repoInfo = currentRepo.value ?: run {
+            showSnackbarMessage("Please select a repository first.")
+            return
+        }
+        val wf = selectedWorkflow.value ?: run {
+            showSnackbarMessage("Please select a workflow to trigger.")
+            return
+        }
+        setStatus("Dispatching workflow...")
+        clearContent() // Clear content area for new status
+        fileContent.value = "Dispatching workflow '${wf.name}'...\n"
+        viewModelScope.launch {
+            try {
+                repository.dispatchWorkflow(repoInfo.owner, repoInfo.repoName, wf.id, repoInfo.branch)
+                fileContent.value += "Workflow dispatched successfully. Waiting for run to start...\n"
+                setStatus("Workflow dispatched.")
+                delay(2000) // Wait a bit then refresh runs
+                loadWorkflowRuns()
+            } catch (e: Exception) {
+                fileContent.value += "Failed to dispatch workflow: ${e.message}\n"
+                showSnackbarMessage("Failed to dispatch workflow: ${e.message}")
+                setStatus("Dispatch failed.")
+            }
+        }
+    }
+
+    fun showRunLog(runId: Long) {
+        val repoInfo = currentRepo.value ?: return
+        clearContent()
+        isLoadingRunLog.value = true
+        fileContent.value = "Loading log for Run #$runId...\n"
+        setStatus("Loading run log...")
+        viewModelScope.launch {
+            try {
+                val log = repository.getRunLogsCombined(repoInfo.owner, repoInfo.repoName, runId)
+                fileContent.value = log
+                setStatus("Log loaded for Run #$runId.")
+            } catch (e: Exception) {
+                fileContent.value = "Error loading log: ${e.message}"
+                showSnackbarMessage("Failed to load run log: ${e.message}")
+            } finally {
+                isLoadingRunLog.value = false
+            }
+        }
+    }
+
+    // Artifact download logic
+    val artifactDownloadUrl = mutableStateOf<String?>(null)
+    val artifactFileName = mutableStateOf<String?>(null)
+    val showArtifactSelectionDialog = mutableStateOf(false)
+    val availableArtifacts = mutableStateListOf```html ()
+
+    fun startArtifactDownload(run: WorkflowRun) {
+        val repoInfo = currentRepo.value ?: run {
+            showSnackbarMessage("Please select a repository first.")
+            return
+        }
+        setStatus("Fetching artifacts...")
+        viewModelScope.launch {
+            try {
+                val artifacts = repository.listRunArtifacts(repoInfo.owner, repoInfo.repoName, run.id)
+                if (artifacts.isEmpty()) {
+                    showSnackbarMessage("No artifacts found for this run.")
+                    setStatus("Ready")
+                    return
+                }
+
+                availableArtifacts.clear()
+                // Prioritize APK, otherwise just add all
+                val apkArtifacts = artifacts.filter { it.name.contains("apk", ignoreCase = true) }
+                if (apkArtifacts.isNotEmpty()) {
+                    availableArtifacts.addAll(apkArtifacts)
+                } else {
+                    availableArtifacts.addAll(artifacts)
+                }
+
+                if (availableArtifacts.size == 1) {
+                    // Directly trigger download for single artifact
+                    val artifact = availableArtifacts.first()
+                    artifactDownloadUrl.value = artifact.archiveDownloadUrl
+                    artifactFileName.value = "${artifact.name}.zip" // Artifacts are downloaded as zip
+                } else {
+                    // Show dialog for multiple artifacts
+                    showArtifactSelectionDialog.value = true
+                }
+            } catch (e: Exception) {
+                showSnackbarMessage("Failed to list artifacts: ${e.message}")
+                setStatus("Ready")
+            }
+        }
+    }
+
+    fun selectArtifactForDownload(artifact: Artifact) {
+        artifactDownloadUrl.value = artifact.archiveDownloadUrl
+        artifactFileName.value = "${artifact.name}.zip"
+        showArtifactSelectionDialog.value = false
+    }
+
+    suspend fun performArtifactDownload(uri: Uri, artifactUrl: String) = withContext(Dispatchers.IO) {
+        setStatus("Downloading artifact...")
+        try {
+            val outputStream = appConfig.context.contentResolver.openOutputStream(uri)
+            outputStream?.use { os ->
+                repository.okHttpClient.newCall(okhttp3.Request.Builder().url(artifactUrl).build()).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw IOException("Failed to download artifact: ${response.code} ${response.message}")
+                    }
+                    response.body?.byteStream()?.use { input ->
+                        input.copyTo(os)
+                    } ?: throw IOException("Empty response body for artifact download")
+                }
+            } ?: throw IOException("Could not open output stream for URI: $uri")
+            showSnackbarMessage("Artifact downloaded successfully!")
+            setStatus("Ready")
+        } catch (e: Exception) {
+            showSnackbarMessage("Error downloading artifact: ${e.message}")
+            setStatus("Ready")
+        }
+    }
+
+    // Settings
+    fun updateFontScale(newScale: Float) {
+        fontScale.value = newScale
+        viewModelScope.launch {
+            configManager.saveFontScale(newScale)
+        }
+    }
+
+    // Factory for MainViewModel
+    class Factory(
+        private val context: Context,
+        private val repository: GitHubRepository,
+        private val config: AppConfig
+    ) : ViewModelProvider.Factory {
+        override fun <T : ViewModel> create(modelClass: Class<T>): T {
+            if (modelClass.isAssignableFrom(MainViewModel::class.java)) {
+                @Suppress("UNCHECKED_CAST")
+                return MainViewModel(ConfigManager(context), repository, config) as T
+            }
+            throw IllegalArgumentException("Unknown ViewModel class")
+        }
+    }
+}
+
+// Helper data class for directory tree nodes
+data class TreeEntryNode(
+    val path: String,
+    val name: String,
+    val type: String, // "blob" or "tree"
+    val children: MutableList<TreeEntryNode>,
+    val depth: Int = 0 // Used for indentation in UI
+)
+复制
+
+ui/main/MainScreen.kt:
+
+kotlin
+复制代码
+收起
+package com.example.githubexplorer.ui.main
+
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.DocumentsContract
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.githubexplorer.data.github.GitHubRepo
+import com.example.githubexplorer.data.github.Workflow
+import com.example.githubexplorer.data.github.WorkflowRun
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.*
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
+@Composable
+fun MainScreen(viewModel: MainViewModel) {
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val currentContext = LocalContext.current as Activity
+
+    val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
+    val showSnackbar by viewModel.showSnackbar.collectAsStateWithLifecycle()
+    val showDialog by viewModel.showDialog.collectAsStateWithLifecycle()
+
+    val fontScale by viewModel.fontScale
+    val originalTypography = MaterialTheme.typography
+    val scaledTypography = remember(fontScale) {
+        Typography(
+            displayLarge = originalTypography.displayLarge.copy(fontSize = originalTypography.displayLarge.fontSize * fontScale),
+            displayMedium = originalTypography.displayMedium.copy(fontSize = originalTypography.displayMedium.fontSize * fontScale),
+            displaySmall = originalTypography.displaySmall.copy(fontSize = originalTypography.displaySmall.fontSize * fontScale),
+            headlineLarge = originalTypography.headlineLarge.copy(fontSize = originalTypography.headlineLarge.fontSize * fontScale),
+            headlineMedium = originalTypography.headlineMedium.copy(fontSize = originalTypography.headlineMedium.fontSize * fontScale),
+            headlineSmall = originalTypography.headlineSmall.copy(fontSize = originalTypography.headlineSmall.fontSize * fontScale),
+            titleLarge = originalTypography.titleLarge.copy(fontSize = originalTypography.titleLarge.fontSize * fontScale),
+            titleMedium = originalTypography.titleMedium.copy(fontSize = originalTypography.titleMedium.fontSize * fontScale),
+            titleSmall = originalTypography.titleSmall.copy(fontSize = originalTypography.titleSmall.fontSize * fontScale),
+            bodyLarge = originalTypography.bodyLarge.copy(fontSize = originalTypography.bodyLarge.fontSize * fontScale),
+            bodyMedium = originalTypography.bodyMedium.copy(fontSize = originalTypography.bodyMedium.fontSize * fontScale),
+            bodySmall = originalTypography.bodySmall.copy(fontSize = originalTypography.bodySmall.fontSize * fontScale),
+            labelLarge = originalTypography.labelLarge.copy(fontSize = originalTypography.labelLarge.fontSize * fontScale),
+            labelMedium = originalTypography.labelMedium.copy(fontSize = originalTypography.labelMedium.fontSize * fontScale),
+            labelSmall = originalTypography.labelSmall.copy(fontSize = originalTypography.labelSmall.fontSize * fontScale),
+        )
+    }
+
+    LaunchedEffect(showSnackbar) {
+        showSnackbar?.let { message ->
+            snackbarHostState.showSnackbar(message)
+            viewModel.dismissSnackbar()
+        }
+    }
+
+    if (showDialog != null) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissAlertDialog() },
+            title = { Text("Information") },
+            text = { Text(showDialog!!) },
+            confirmButton = {
+                Button(onClick = { viewModel.dismissAlertDialog() }) { Text("OK") }
+            }
+        )
+    }
+
+    val createDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/zip"), // Or "application/vnd.android.package-archive" for .apk
+        onResult = { uri: Uri? ->
+            uri?.let {
+                viewModel.artifactDownloadUrl.value?.let { downloadUrl ->
+                    scope.launch { viewModel.performArtifactDownload(it, downloadUrl) }
+                }
+            } ?: viewModel.showSnackbarMessage("Artifact download cancelled.")
+        }
+    )
+
+    LaunchedEffect(viewModel.artifactDownloadUrl.value) {
+        viewModel.artifactDownloadUrl.value?.let { url ->
+            val fileName = viewModel.artifactFileName.value ?: "artifact_${System.currentTimeMillis()}.zip"
+            createDocumentLauncher.launch(fileName)
+            viewModel.artifactDownloadUrl.value = null // Reset after launch
+            viewModel.artifactFileName.value = null
+        }
+    }
+
+
+    CompositionLocalProvider(
+        LocalTextStyle provides scaledTypography.bodyMedium,
+        LocalContentColor provides MaterialTheme.colorScheme.onSurface,
+        LocalTextStyles provides scaledTypography, // Custom local for typography
+        MaterialTheme provides MaterialTheme.copy(typography = scaledTypography)
+    ) {
+        Scaffold(
+            snackbarHost = { SnackbarHost(snackbarHostState) },
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Text(
+                            text = "GitHub Explorer - ${viewModel.currentRepo.value?.fullName ?: viewModel.userLoggedIn.value?.login ?: "Guest"}",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    },
+                    actions = {
+                        var showMenu by remember { mutableStateOf(false) }
+                        IconButton(onClick = { showMenu = true }) {
+                            Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Preferences") },
+                                onClick = {
+                                    showMenu = false
+                                    // Open settings dialog
+                                    viewModel.showAlertDialog("Preferences dialog not yet implemented. Font scale: ${fontScale}")
+                                    // A proper dialog would be separate
+                                    viewModel.showSettingsDialog.value = true
+                                }
+                            )
+                        }
+                    }
+                )
+            },
+            bottomBar = {
+                BottomAppBar(modifier = Modifier.height(36.dp)) {
+                    Text(text = statusMessage, modifier = Modifier.padding(horizontal = 8.dp))
+                }
+            }
+        ) { paddingValues ->
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+            ) {
+                val pagerState = rememberPagerState(pageCount = { 3 })
+                val tabs = listOf("Repositories", "Directory Tree", "Actions")
+
+                // Left Pane: Tabs
+                Column(modifier = Modifier.weight(0.4f)) {
+                    TabRow(selectedTabIndex = pagerState.currentPage) {
+                        tabs.forEachIndexed { index, title ->
+                            Tab(
+                                selected = pagerState.currentPage == index,
+                                onClick = { scope.launch { pagerState.animateScrollToPage(index) } },
+                                text = { Text(title) }
+                            )
+                        }
+                    }
+                    HorizontalPager(
+                        state = pagerState,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    ) { page ->
+                        when (page) {
+                            0 -> RepositoriesTab(viewModel = viewModel)
+                            1 -> DirectoryTreeTab(viewModel = viewModel)
+                            2 -> ActionsTab(viewModel = viewModel)
+                        }
+                    }
+                }
+
+                // Divider
+                VerticalDivider(modifier = Modifier.fillMaxHeight(), thickness = 1.dp)
+
+                // Right Pane: Content Display
+                ContentDisplay(viewModel = viewModel, modifier = Modifier.weight(0.6f))
+            }
+        }
+    }
+
+    if (viewModel.showSettingsDialog.value) {
+        SettingsDialog(
+            currentScale = fontScale,
+            onScaleChange = { viewModel.updateFontScale(it) },
+            onDismiss = { viewModel.showSettingsDialog.value = false },
+            onRestartNeeded = {
+                // In Android, restarting the app for font changes is usually done by `recreate()` the Activity
+                // or just applying the change dynamically. For a full app restart, it's more complex.
+                // For simplicity, we'll just recreate the current activity.
+                currentContext.recreate()
+            }
+        )
+    }
+
+    if (viewModel.showArtifactSelectionDialog.value) {
+        ArtifactSelectionDialog(
+            artifacts = viewModel.availableArtifacts,
+            onSelect = { artifact ->
+                viewModel.selectArtifactForDownload(artifact)
+            },
+            onDismiss = { viewModel.showArtifactSelectionDialog.value = false }
+        )
+    }
+}
+
+// Global TextStyles for scaled Typography. Needs to be defined somewhere accessible.
+val LocalTextStyles = staticCompositionLocalOf {
+    Typography()
+}
+
+// ----- Sub-Composables for MainScreen -----
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RepositoriesTab(viewModel: MainViewModel) {
+    val searchQuery by viewModel.searchQuery
+    val repos by viewModel.repos
+    val isLoading by viewModel.isLoadingRepos
+
+    Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { viewModel.searchQuery.value = it },
+            label = { Text("Search repositories") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceAround
+        ) {
+            Button(onClick = viewModel::loadMyRepos, enabled = !isLoading) { Text("My Repos") }
+            Button(onClick = viewModel::searchRepos, enabled = !isLoading) { Text("Search") }
+            Button(onClick = viewModel::loadMyRepos, enabled = !isLoading) { Text("Refresh") }
+        }
+
+        if (isLoading) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(repos) { repo ->
+                ListItem(
+                    modifier = Modifier.clickable { viewModel.selectRepo(repo) },
+                    headlineContent = { Text(repo.fullName, fontWeight = FontWeight.Bold) },
+                    supportingContent = {
+                        repo.description?.let { Text(it, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    },
+                    trailingContent = { Text(repo.defaultBranch) }
+                )
+                Divider()
+            }
+        }
+    }
+}
+
+@Composable
+fun DirectoryTreeTab(viewModel: MainViewModel) {
+    val treeNodes by viewModel.treeEntries
+    val expandedNodesMap by viewModel.expandedNodes
+    val isLoading by viewModel.isLoadingTree
+
+    Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+        if (isLoading) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        if (treeNodes.isEmpty() && !isLoading) {
+            Text("Select a repository or directory tree is empty.", modifier = Modifier.padding(16.dp))
+        }
+
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(treeNodes, key = { it.path }) { node ->
+                TreeItem(node = node, viewModel = viewModel, expandedNodesMap = expandedNodesMap, depth = 0)
+            }
+        }
+    }
+}
+
+@Composable
+fun TreeItem(node: TreeEntryNode, viewModel: MainViewModel, expandedNodesMap: Map<String, Boolean>, depth: Int) {
+    val isExpanded = expandedNodesMap[node.path] ?: false
+    val horizontalPadding = (depth * 16).dp
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                if (node.type == "tree") {
+                    viewModel.toggleNodeExpansion(node.path)
+                } else {
+                    viewModel.displayFileContent(node.path)
+                }
+            }
+            .padding(start = horizontalPadding, vertical = 4.dp, end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (node.type == "tree") {
+            Icon(
+                imageVector = if (isExpanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowRight,
+                contentDescription = if (isExpanded) "Collapse" else "Expand",
+                modifier = Modifier.size(20.dp)
+            )
+        } else {
+            Spacer(modifier = Modifier.width(20.dp)) // Align files with expanded folders
+        }
+        Icon(
+            imageVector = if (node.type == "tree") Icons.Filled.Folder else Icons.Filled.Description,
+            contentDescription = node.type,
+            modifier = Modifier.size(20.dp).padding(horizontal = 4.dp)
+        )
+        Text(node.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+
+    if (isExpanded && node.type == "tree") {
+        node.children.forEach { child ->
+            TreeItem(node = child, viewModel = viewModel, expandedNodesMap = expandedNodesMap, depth = depth + 1)
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ActionsTab(viewModel: MainViewModel) {
+    val currentRepo by viewModel.currentRepo
+    val workflows by viewModel.workflows
+    val selectedWorkflow by viewModel.selectedWorkflow
+    val workflowRuns by viewModel.workflowRuns
+    val workflowRunStatusFilter by viewModel.workflowRunStatusFilter
+    val isLoadingWorkflows by viewModel.isLoadingWorkflows
+    val isLoadingRuns by viewModel.isLoadingRuns
+
+    Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Workflow:", modifier = Modifier.weight(0.2f))
+            ExposedDropdownMenuBox(
+                expanded = false, // Controlled by inner state in `WorkflowSelector`
+                onExpandedChange = { /* handled inside WorkflowSelector */ },
+                modifier = Modifier.weight(0.8f)
+            ) {
+                WorkflowSelector(
+                    workflows = workflows,
+                    selectedWorkflow = selectedWorkflow,
+                    onWorkflowSelected = { viewModel.selectWorkflow(it) },
+                    modifier = Modifier.menuAnchor()
+                )
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Status:", modifier = Modifier.weight(0.2f))
+            val statusOptions = listOf("所有", "进行中", "成功", "失败")
+            var expanded by remember { mutableStateOf(false) }
+
+            ExposedDropdownMenuBox(
+                expanded = expanded,
+                onExpandedChange = { expanded = !expanded },
+                modifier = Modifier.weight(0.4f)
+            ) {
+                OutlinedTextField(
+                    value = workflowRunStatusFilter,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Filter Status") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                    modifier = Modifier.fillMaxWidth().menuAnchor()
+                )
+                ExposedDropdownMenu(
+                    expanded = expanded,
+                    onDismissRequest = { expanded = false }
+                ) {
+                    statusOptions.forEach { status ->
+                        DropdownMenuItem(
+                            text = { Text(status) },
+                            onClick = {
+                                viewModel.workflowRunStatusFilter.value = status
+                                viewModel.loadWorkflowRuns()
+                                expanded = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Button(onClick = { viewModel.loadWorkflows() }, enabled = !isLoadingWorkflows) { Text("Refresh") }
+            Spacer(modifier = Modifier.width(4.dp))
+            Button(
+                onClick = { viewModel.triggerWorkflow() },
+                enabled = !isLoadingWorkflows && selectedWorkflow != null && currentRepo != null
+            ) { Text("Trigger") }
+        }
+
+        if (isLoadingWorkflows || isLoadingRuns) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(workflowRuns, key = { it.id }) { run ->
+                RunItem(run = run, viewModel = viewModel)
+                Divider()
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun WorkflowSelector(
+    workflows: List<Workflow>,
+    selectedWorkflow: Workflow?,
+    onWorkflowSelected: (Workflow) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = !expanded },
+        modifier = modifier
+    ) {
+        OutlinedTextField(
+            value = selectedWorkflow?.name ?: "Select Workflow",
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Workflow") },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+            modifier = Modifier.fillMaxWidth().menuAnchor()
+        )
+        ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            workflows.forEach { workflow ->
+                DropdownMenuItem(
+                    text = { Text(workflow.name) },
+                    onClick = {
+                        onWorkflowSelected(workflow)
+                        expanded = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun RunItem(run: WorkflowRun, viewModel: MainViewModel) {
+    val formatter = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+    val time = try { formatter.format(SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).parse(run.createdAt)) } catch (e: Exception) { run.createdAt }
+
+    val statusDisplay = run.conclusion?.capitalize(Locale.ROOT) ?: run.status.capitalize(Locale.ROOT)
+    val canDownload = run.status == "completed" && run.conclusion == "success"
+
+    ListItem(
+        modifier = Modifier.clickable { viewModel.showRunLog(run.id) },
+        headlineContent = { Text("Run ${run.id}", fontWeight = FontWeight.Bold) },
+        supportingContent = { Text("Branch: ${run.headBranch}") },
+        trailingContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(statusDisplay, modifier = Modifier.width(60.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(time, modifier = Modifier.width(60.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (canDownload) {
+                    IconButton(onClick = { viewModel.startArtifactDownload(run) }) {
+                        Icon(Icons.Filled.Download, contentDescription = "Download Artifact")
+                    }
+                } else {
+                    Spacer(modifier = Modifier.width(48.dp)) // Match icon width
+                }
+            }
+        }
+    )
+}
+
+@Composable
+fun ContentDisplay(viewModel: MainViewModel, modifier: Modifier = Modifier) {
+    val fileContent by viewModel.fileContent
+    val isLoadingContent by viewModel.isLoadingContent
+    val isLoadingRunLog by viewModel.isLoadingRunLog
+    val isBinaryFile by viewModel.isBinaryFile
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(8.dp)
+    ) {
+        if (isLoadingContent || isLoadingRunLog) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        if (fileContent == null) {
+            Text("Select a file or workflow run log to display content.", modifier = Modifier.padding(16.dp))
+        } else {
+            val scrollState = rememberScrollState()
+            Text(
+                text = fileContent!!,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(scrollState),
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                fontSize = LocalTextStyles.current.bodySmall.fontSize, // Use scaled font size
+                color = if (isBinaryFile) MaterialTheme.colorScheme.error else LocalContentColor.current
+            )
+        }
+    }
+}
+
+@Composable
+fun SettingsDialog(
+    currentScale: Float,
+    onScaleChange: (Float) -> Unit,
+    onDismiss: () -> Unit,
+    onRestartNeeded: () -> Unit
+) {
+    var tempScale by remember { mutableStateOf(currentScale) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Preferences") },
+        text = {
+            Column {
+                Text("UI Font Scale: ${String.format("%.1f", tempScale)}x")
+                Slider(
+                    value = tempScale,
+                    onValueChange = { tempScale = it },
+                    valueRange = 0.8f..2.0f,
+                    steps = 11, // 0.8, 0.9, ..., 2.0 (13 steps, so 12 intervals)
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                if (tempScale != currentScale) {
+                    onScaleChange(tempScale)
+                    onRestartNeeded() // Indicate that a restart is needed
+                }
+                onDismiss()
+            }) { Text("Save") }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ArtifactSelectionDialog(
+    artifacts: List<com.example.githubexplorer.data.github.Artifact>,
+    onSelect: (com.example.githubexplorer.data.github.Artifact) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedArtifact by remember { mutableStateOf<com.example.githubexplorer.data.github.Artifact?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Select Artifact to Download") },
+        text = {
+            Column {
+                artifacts.forEach { artifact ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedArtifact = artifact }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = selectedArtifact == artifact,
+                            onClick = { selectedArtifact = artifact }
+                        )
+                        Text("${artifact.name} (${String.format("%.1f", artifact.sizeInBytes / 1024f / 1024f)} MB)")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    selectedArtifact?.let {
+                        onSelect(it)
+                    } ?: run {
+                        // Show a toast or snackbar
+                        // This would typically come from ViewModel
+                        // For now, let's just dismiss and user can retry
+                        onDismiss()
+                    }
+                },
+                enabled = selectedArtifact != null
+            ) { Text("Download") }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+// Temporary for `LocalTextStyles` until Jetpack Compose provides better direct font scaling API.
+// Typically you'd override `MaterialTheme.typography` directly.
+// This is a workaround if you only want to scale text components selectively.
+// For a full theme scale, overriding MaterialTheme.typography is better.
+// The `CompositionLocalProvider` in `MainScreen` does this.
+val LocalTextStyles = staticCompositionLocalOf {
+    Typography()
+}
+复制
+
+8. MainActivity.kt:
+
+kotlin
+复制代码
+收起
+package com.example.githubexplorer
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.viewModels
+import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import com.example.githubexplorer.data.github.GitHubHttpClient
+import com.example.githubexplorer.data.github.GitHubRepository
+import com.example.githubexplorer.data.github.GitHubUser
+import com.example.githubexplorer.ui.login.LoginScreen
+import com.example.githubexplorer.ui.login.LoginViewModel
+import com.example.githubexplorer.ui.main.MainScreen
+import com.example.githubexplorer.ui.main.MainViewModel
+import com.example.githubexplorer.ui.theme.GitHubExplorerTheme
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+
+class MainActivity : ComponentActivity() {
+
+    private lateinit var configManager: ConfigManager
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        configManager = ConfigManager(this)
+
+        setContent {
+            GitHubExplorerTheme {
+                val coroutineScope = rememberCoroutineScope()
+                var loggedInUser by remember { mutableStateOf<GitHubUser?>(null) }
+                var gitHubRepository by remember { mutableStateOf<GitHubRepository?>(null) }
+                var initialConfig by remember { mutableStateOf<AppConfig?>(null) }
+                var showLogin by remember { mutableStateOf(true) }
+
+                // Load initial config and try auto-login on startup
+                LaunchedEffect(Unit) {
+                    val config = configManager.loadConfig()
+                    initialConfig = config
+                    val token = config.token
+                    if (token.isNotBlank()) {
+                        try {
+                            val api = GitHubHttpClient.getClient(token)
+                            val repository = GitHubRepository(api, GitHubHttpClient.getPlainClient(token))
+                            val user = repository.getUser()
+                            gitHubRepository = repository
+                            loggedInUser = user
+                            showLogin = false // Auto-login successful
+                        } catch (e: Exception) {
+                            // Auto-login failed, show login screen
+                            showLogin = true
+                            // Optionally show a toast about auto-login failure
+                        }
+                    }
+                }
+
+                if (showLogin) {
+                    val loginViewModel: LoginViewModel = viewModel(
+                        factory = LoginViewModelFactory(LocalContext.current)
+                    )
+                    LoginScreen(
+                        viewModel = loginViewModel,
+                        onLoginSuccess = { repo, user ->
+                            gitHubRepository = repo
+                            loggedInUser = user
+                            showLogin = false
+                            coroutineScope.launch {
+                                // Reload config after successful login to ensure it's up to date
+                                // for MainViewModel initialization
+                                initialConfig = configManager.loadConfig()
+                            }
+                        }
+                    )
+                } else if (gitHubRepository != null && loggedInUser != null && initialConfig != null) {
+                    val mainViewModel: MainViewModel = viewModel(
+                        factory = MainViewModelFactory(
+                            LocalContext.current,
+                            gitHubRepository!!,
+                            initialConfig!!
+                        )
+                    )
+                    MainScreen(viewModel = mainViewModel)
+                }
+            }
+        }
+    }
+
+    // ViewModel Factories
+    class LoginViewModelFactory(private val context: android.content.Context) : ViewModelProvider.Factory {
+        override fun <T : ViewModel> create(modelClass: Class<T>): T {
+            if (modelClass.isAssignableFrom(LoginViewModel::class.java)) {
+                @Suppress("UNCHECKED_CAST")
+                return LoginViewModel(ConfigManager(context), context) as T
+            }
+            throw IllegalArgumentException("Unknown ViewModel class")
+        }
+    }
+
+    class MainViewModelFactory(
+        private val context: android.content.Context,
+        private val repository: GitHubRepository,
+        private val config: AppConfig
+    ) : ViewModelProvider.Factory {
+        override fun <T : ViewModel> create(modelClass: Class<T>): T {
+            if (modelClass.isAssignableFrom(MainViewModel::class.java)) {
+                @Suppress("UNCHECKED_CAST")
+                return MainViewModel(ConfigManager(context), repository, config) as T
+            }
+            throw IllegalArgumentException("Unknown ViewModel class")
+        }
+    }
+}
+复制
+
+Explanation and Differences:
+
+Entry Point: Android apps start with an Activity. MainActivity.kt handles the initial login flow.
+UI: Jetpack Compose replaces Tkinter widgets with @Composable functions. Layouts are handled declaratively using Column, Row, Modifier.weight(), etc.
+State Management: mutableStateOf, mutableStateListOf, MutableStateFlow are used in ViewModels to manage UI state. Changes to these states automatically trigger UI recomposition.
+Asynchronous Operations: All network requests and disk I/O are performed using Kotlin Coroutines (viewModelScope.launch, withContext(Dispatchers.IO)), ensuring the UI thread remains responsive.
+API Client: requests is replaced by Retrofit (for structured API calls) and OkHttp (for direct binary downloads like artifacts). AuthInterceptor handles adding the token to every request.
+Configuration: ConfigManager uses Android DataStore to persist the token and font scale across app launches, similar to the .github_browser_config.json file.
+Login Flow: The LoginScreen uses a LoginViewModel to handle token input and validation. On successful login, MainActivity switches to MainScreen.
+Main Application Structure:
+MainScreen uses Scaffold, TopAppBar, BottomAppBar for basic app structure.
+HorizontalPager with TabRow creates the tabbed interface (Repositories, Directory Tree, Actions).
+LazyColumn is used for efficient display of long lists (repositories, tree items, workflow runs).
+Treeview (DirectoryTreeTab): A custom recursive @Composable TreeItem is used to render the directory tree with indentation and expandable/collapsible folders, mimicking the Tkinter Treeview functionality.
+File Content: ScrolledText is replaced by a Text composable within a verticalScroll modifier.
+Actions Tab: ExposedDropdownMenuBox replaces ttk.Combobox for workflow selection and status filtering. LazyColumn displays workflow runs.
+Artifact Download: Uses Android's ActivityResultContracts.CreateDocument to prompt the user to choose a save location, then OkHttp performs the stream download.
+Error Handling & Feedback: errorMessage in LoginViewModel and showSnackbar, showDialog in MainViewModel are used to display AlertDialog and Snackbar messages, similar to Tkinter's messagebox.
+Font Scaling: CompositionLocalProvider is used in MainScreen to override the default MaterialTheme.typography with scaled versions based on the fontScale setting, applying it to all child composables. Restarting the activity (currentContext.recreate()) is a common way to apply theme changes in Android, even in Compose, if the theme is deeply integrated.
+
+This robust translation provides a modern Android experience with the functionality of your Python Tkinter app. Remember to creat
+e an Android Studio project and place these files in the correct directories.

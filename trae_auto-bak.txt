@@ -1,0 +1,127 @@
+在竖屏时，当前左右布局（Row）会挤压两侧内容，需要改为上下布局（Column）。利用 Compose 的 LocalConfiguration 判断屏幕方向，动态切换排列方式即可。
+
+修改文件
+
+app/src/main/java/com/gemini/githubexplorer/ui/main/MainScreen.kt
+
+改动点
+
+1. 添加导入
+   ```kotlin
+   import android.content.res.Configuration
+   import androidx.compose.ui.platform.LocalConfiguration
+   ```
+2. 在 MainScreen 中获取屏幕方向
+      在 Scaffold 的 content lambda 内（val repos = ... 之前）插入：
+   ```kotlin
+   val configuration = LocalConfiguration.current
+   val isPortrait = configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+   ```
+3. 替换原有 Row 布局为自适应布局
+      找到原来包裹左侧面板和文件预览区的 Row 代码块（从 Row(modifier = Modifier.fillMaxSize().padding(paddingValues)) 开始），替换为以下自适应代码：
+
+```kotlin
+if (isPortrait) {
+    // 竖屏：上下布局
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(paddingValues)
+    ) {
+        // 上方区域：目录树/Actions 面板，占据 40% 高度
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(0.4f)
+        ) {
+            val pagerState = rememberPagerState(pageCount = { 3 })
+            val tabs = listOf("Repositories", "Directory Tree", "Actions")
+
+            TabRow(selectedTabIndex = pagerState.currentPage) {
+                tabs.forEachIndexed { index, title ->
+                    Tab(
+                        selected = pagerState.currentPage == index,
+                        onClick = { scope.launch { pagerState.animateScrollToPage(index) } },
+                        text = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    )
+                }
+            }
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                when (it) {
+                    0 -> RepositoriesTab(viewModel = viewModel)
+                    1 -> DirectoryTreeTab(viewModel = viewModel)
+                    2 -> ActionsTab(viewModel = viewModel)
+                }
+            }
+        }
+
+        // 水平分割线
+        Spacer(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(MaterialTheme.colorScheme.outline)
+        )
+
+        // 下方区域：文件预览区，占据 60% 高度
+        ContentDisplay(
+            viewModel = viewModel,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(0.6f)
+        )
+    }
+} else {
+    // 横屏：保持原有左右布局
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(paddingValues)
+    ) {
+        // 左侧面板（原代码）
+        Column(modifier = Modifier.width(280.dp)) {
+            val pagerState = rememberPagerState(pageCount = { 3 })
+            val tabs = listOf("Repositories", "Directory Tree", "Actions")
+
+            TabRow(selectedTabIndex = pagerState.currentPage) {
+                tabs.forEachIndexed { index, title ->
+                    Tab(
+                        selected = pagerState.currentPage == index,
+                        onClick = { scope.launch { pagerState.animateScrollToPage(index) } },
+                        text = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                    )
+                }
+            }
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                when (it) {
+                    0 -> RepositoriesTab(viewModel = viewModel)
+                    1 -> DirectoryTreeTab(viewModel = viewModel)
+                    2 -> ActionsTab(viewModel = viewModel)
+                }
+            }
+        }
+
+        // 垂直分割线
+        Box(modifier = Modifier.fillMaxHeight().width(1.dp).background(MaterialTheme.colorScheme.outline))
+
+        // 右侧内容区域
+        ContentDisplay(viewModel = viewModel, modifier = Modifier.weight(1f))
+    }
+}
+```
+
+说明
+
+· 竖屏时移除固定宽度，面板与预览区上下排列，比例可调整（当前为 0.4f 和 0.6f）。
+· 横屏保持原有 280dp 左侧固定宽度 + 右侧填充的布局。
+· 其他子组件（RepositoriesTab、DirectoryTreeTab 等）无需变动。
+
+替换后重新编译，应用即可在竖屏下自动切换为上下布局。

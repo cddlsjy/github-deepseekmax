@@ -1,0 +1,1 @@
+这个代码在gitee中构建apk有问题，是因为build使用了kts文件而gitee使用的是gradle文件，请修改
